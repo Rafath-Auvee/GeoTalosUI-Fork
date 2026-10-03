@@ -13,45 +13,35 @@
 import { useEffect } from 'react';
 import { useMapLayersStore } from '@/stores/mapLayersStore';
 import { annotationSetsApi, buildRasterTileUrl } from '@/lib/api/annotation-sets';
-import { annotationSchemasApi } from '@/lib/api/annotation-schemas';
 import { getMapManager } from '@/features/maps/MapManager';
-import { buildClassStyles } from '@/features/maps/utils/annotationStyles';
 
 /**
- * Fill in class colors the layer was added without (e.g. layers restored from
- * a saved map). MVT layers have no feature list in the browser, so styles come
- * from the set's schema classes. Rebuilds the layer so its style closure sees them.
+ * Vector annotation sets render from MVT tiles. Layers restored from a saved
+ * map arrive via initLayer() without tile settings, so set them here; the
+ * tileUrl change makes useMapSync build the VectorGrid layer.
  */
-async function hydrateClassStylesFromSchema(layerId: string, setId: string): Promise<void> {
-  const annotationSet = await annotationSetsApi.get(setId);
-  if (!annotationSet.schema_id) return;
-  const { items } = await annotationSchemasApi.getClasses(annotationSet.schema_id);
-  const mapped = buildClassStyles(items) ?? {};
-
-  const layer = useMapLayersStore.getState().layers[layerId];
-  if (!layer) return;
-  const existing = layer.classStyles ?? {};
-  const missing = Object.keys(mapped).filter((key) => !existing[key]);
-  if (missing.length === 0) return;
-
-  const merged = { ...mapped, ...existing };
-  useMapLayersStore.setState((s) => {
-    const current = s.layers[layerId];
-    return current ? { layers: { ...s.layers, [layerId]: { ...current, classStyles: merged } } } : {};
-  });
-  const updated = useMapLayersStore.getState().layers[layerId];
-  if (updated) getMapManager().rebuildTileLayer(layerId, updated);
-}
-
-/** Vector annotation sets render from MVT tiles; only class styles need loading. */
 function loadVectorAnnotationSet(id: string, setId: string): void {
-  void hydrateClassStylesFromSchema(id, setId).catch(() => {});
+  useMapLayersStore.setState((s) => {
+    const cur = s.layers[id];
+    if (!cur || cur.tileFormat === 'mvt') return {};
+    return {
+      layers: {
+        ...s.layers,
+        [id]: {
+          ...cur,
+          tileFormat: 'mvt' as const,
+          mvtLayerName: 'annotation_set_mvt',
+          tileUrl: annotationSetsApi.getTileUrlTemplate(setId),
+        },
+      },
+    };
+  });
 }
 
 export function useAnnotationSync(): void {
   // ── Fetch data when a new annotation-set layer is added ───────────────────
   // For raster masks: fetch raster config → build TiTiler tile URL.
-  // For vector sets: tiles load from the MVT URL; only class styles are hydrated.
+  // For vector sets: mark the layer as MVT so it loads tiles for the viewport.
   useEffect(() => {
     const unsub = useMapLayersStore.subscribe(
       (s) => s.layers,

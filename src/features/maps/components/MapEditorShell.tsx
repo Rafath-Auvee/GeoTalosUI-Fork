@@ -566,12 +566,7 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
     useMapLayersStore.setState((s) => ({
       layers: { ...s.layers, ...layerUpdates },
     }));
-
-    // Trigger a refresh so MapManager re-renders polygons with updated colours
-    for (const layerId of Object.keys(layerUpdates)) {
-      const annSetId = layerId.replace('annset-', '');
-      useMapLayersStore.getState().requestAnnotationSetRefresh(annSetId);
-    }
+    // useMapSync rebuilds MVT layers when classStyles change; no data refresh needed.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [annotationSets, schemaClassStylesMap]);
 
@@ -601,12 +596,7 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
     useMapLayersStore.setState((s) => ({
       layers: { ...s.layers, ...layerUpdates },
     }));
-
-    // Trigger a refresh for each updated layer
-    for (const layerId of Object.keys(layerUpdates)) {
-      const annSetId = layerId.replace('annset-', '');
-      useMapLayersStore.getState().requestAnnotationSetRefresh(annSetId);
-    }
+    // useMapSync rebuilds MVT layers when classStyles change; no data refresh needed.
   }, [schemaClassStylesMap, annotationSets]);
 
   // ── Restore saved AOIs from /maps/{id}/aois on mount ────────────────────────
