@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
-import { Layers, ChevronLeft, ChevronRight, ChevronDown, Plus, ChevronUp } from 'lucide-react';
+import { Layers, ChevronLeft, ChevronRight, ChevronDown, Plus } from 'lucide-react';
 import { AnnotationSetPicker } from './AnnotationSetPicker';
 import type { AnnotationSet as ApiAnnotationSet, AnnotationClass } from '@/types/api';
 import {
@@ -87,7 +87,7 @@ export function LeftPanel({
   // Default collapsed so the list stays tidy until the user opts in.
   const [expandedAois, setExpandedAois] = useState<Record<string, boolean>>({});
   const [selectedSchemaId, setSelectedSchemaId] = useState<string | null>(null);
-  const [expandedSchemas, setExpandedSchemas] = useState<Record<string, boolean>>({});
+  const [, setExpandedSchemas] = useState<Record<string, boolean>>({});
   const isCompact = useIsCompact();
   const queryClient = useQueryClient();
   const [legendClassMeta, setLegendClassMeta] = useState<Record<string, { name: string; description?: string }>>({});
