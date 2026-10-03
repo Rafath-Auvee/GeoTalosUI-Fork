@@ -1194,97 +1194,42 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
     getMapManager().setLayerData('alerts-all', alerts);
   }, [alerts, mapReady]);
 
-  // Annotation sets — fetch GeoJSON features and push to MapManager
+  // Annotation sets render from MVT tiles, so the map never downloads the whole
+  // set. Only the set's bounds are fetched (for zoom-to-layer). Tile reloads
+  // after edits are handled by the annotation sync (refreshAnnotationSetTiles).
   const annSetFetchedRef = useRef<Set<string>>(new Set());
 
-  // Helper: fetch annotation set features and push to MapManager
-  const fetchAnnSetFeatures = useCallback((annSetId: string, layerId: string) => {
-    const mm = getMapManager();
-
-    // Set loading state
-    useMapLayersStore.setState((s) => ({
-      layers: s.layers[layerId]
-        ? { ...s.layers, [layerId]: { ...s.layers[layerId], loading: true } }
-        : s.layers,
-    }));
-
-    import('@/lib/api/annotation-sets').then(({ annotationSetsApi }) => {
-      annotationSetsApi.getFeatures(annSetId)
-        .then((fc) => {
-          mm.setLayerData(layerId, fc);
-
-          // Compute bounds from all features so zoom-to-layer works
-          let bounds: [number, number, number, number] | null = null;
-          const features = (fc as { features?: { geometry?: { coordinates: number[] | number[][] | number[][][] } }[] })?.features;
-          if (features && features.length > 0) {
-            let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity;
-            const visitCoords = (coords: unknown) => {
-              if (!Array.isArray(coords)) return;
-              if (typeof coords[0] === 'number') {
-                const [lng, lat] = coords as [number, number];
-                if (lng < minLng) minLng = lng;
-                if (lng > maxLng) maxLng = lng;
-                if (lat < minLat) minLat = lat;
-                if (lat > maxLat) maxLat = lat;
-              } else {
-                for (const c of coords) visitCoords(c);
-              }
-            };
-            for (const f of features) {
-              if (f.geometry?.coordinates) visitCoords(f.geometry.coordinates);
-            }
-            if (minLng !== Infinity) bounds = [minLng, minLat, maxLng, maxLat];
-          }
-
-          useMapLayersStore.setState((s) => ({
-            layers: s.layers[layerId]
-              ? { ...s.layers, [layerId]: { ...s.layers[layerId], loading: false, error: false, bounds } }
-              : s.layers,
-          }));
-        })
-        .catch(() => {
-          // Do NOT clear annSetFetchedRef here — that would cause an infinite
-          // fetch loop (clear ref → state update → re-render → re-fetch → 404 → repeat).
-          useMapLayersStore.setState((s) => ({
-            layers: s.layers[layerId]
-              ? { ...s.layers, [layerId]: { ...s.layers[layerId], loading: false, error: true } }
-              : s.layers,
-          }));
-        });
-    });
+  const fetchAnnSetBounds = useCallback((annSetId: string, layerId: string) => {
+    annotationSetsApi.getBounds(annSetId)
+      .then(({ bounds: b }) => {
+        const bounds: [number, number, number, number] | null = b ? [b.west, b.south, b.east, b.north] : null;
+        useMapLayersStore.setState((s) => ({
+          layers: s.layers[layerId]
+            ? { ...s.layers, [layerId]: { ...s.layers[layerId], loading: false, error: false, bounds } }
+            : s.layers,
+        }));
+      })
+      .catch(() => {
+        // Do NOT clear annSetFetchedRef here — that would cause a re-fetch loop.
+        useMapLayersStore.setState((s) => ({
+          layers: s.layers[layerId]
+            ? { ...s.layers, [layerId]: { ...s.layers[layerId], loading: false, error: true } }
+            : s.layers,
+        }));
+      });
   }, []);
 
   useEffect(() => {
     if (!mapReady) return;
-    const mm = getMapManager();
     annotationSets.forEach((annSet) => {
       const setId = annSet.annotation_set_id;
       const layerId = `annset-${setId}`;
       if (!layers[layerId]) return;
       if (annSetFetchedRef.current.has(setId)) return;
       annSetFetchedRef.current.add(setId);
-
-      fetchAnnSetFeatures(setId, layerId);
-
-      // 4C: Register viewport callback for debounced reload on pan/zoom
-      mm.registerViewportCallback(layerId, () => {
-        fetchAnnSetFeatures(setId, layerId);
-      });
+      fetchAnnSetBounds(setId, layerId);
     });
-  }, [annotationSets, layers, mapReady, fetchAnnSetFeatures]);
-
-  // Re-fetch annotation set features when signalled (e.g. after annotation save)
-  const refreshAnnotationSetId = useMapLayersStore((s) => s.refreshAnnotationSetId);
-  const clearAnnotationSetRefresh = useMapLayersStore((s) => s.clearAnnotationSetRefresh);
-  useEffect(() => {
-    if (!refreshAnnotationSetId || !mapReady) return;
-    const layerId = `annset-${refreshAnnotationSetId}`;
-    // Allow re-fetch by clearing the guard
-    annSetFetchedRef.current.delete(refreshAnnotationSetId);
-    fetchAnnSetFeatures(refreshAnnotationSetId, layerId);
-    annSetFetchedRef.current.add(refreshAnnotationSetId);
-    clearAnnotationSetRefresh();
-  }, [refreshAnnotationSetId, mapReady, fetchAnnSetFeatures, clearAnnotationSetRefresh]);
+  }, [annotationSets, layers, mapReady, fetchAnnSetBounds]);
 
   // ── On-map annotation actions (verify / delete) ─────────────────────────────
   // The MapManager popup shows small verify/delete buttons on the clicked
@@ -1311,7 +1256,6 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
         annotationSetsApi.verifyFeature(setId, annId, mapId)
           .then(async (res) => {
             const store = useMapLayersStore.getState();
-            const mm = getMapManager();
             const verifiedLayerId = `annset-${res.verified_set_id}`;
             // Source: drop the moved point from its original layer (only
             // single-slot refresh call, so it can't be clobbered).
@@ -1326,8 +1270,7 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
               store.addAnnotationSetLayer({ setId: res.verified_set_id, name });
             } else {
               try {
-                const fc = await annotationSetsApi.getFeatures(res.verified_set_id);
-                mm.setLayerData(verifiedLayerId, fc);
+                await store.refreshAnnotationSetTiles(res.verified_set_id);
               } catch { /* layer may have been removed */ }
             }
             void queryClient.invalidateQueries({ queryKey: qk.maps.detail(mapId) });

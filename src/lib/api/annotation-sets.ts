@@ -84,9 +84,11 @@ export const annotationSetsApi = {
       .get(EP.annotationSets.listByOrg(), { searchParams: toSearchParams(filters) })
       .json<{ items: AnnotationSet[] }>(),
 
-  /** Build MVT tile URL template (literal {z}/{x}/{y} placeholders for Leaflet). */
-  getTileUrlTemplate: (setId: string) =>
-    `${API_BASE.replace(/\/$/, '')}/${EP.annotationSets.tiles(setId)}`,
+  /** Build MVT tile URL template (literal {z}/{x}/{y} placeholders for Leaflet).
+   *  Pass the set's tile_version after an edit so the layer reloads its tiles. */
+  getTileUrlTemplate: (setId: string, tileVersion?: number) =>
+    `${API_BASE.replace(/\/$/, '')}/${EP.annotationSets.tiles(setId)}` +
+    (tileVersion != null ? `?v=${tileVersion}` : ''),
 
   /** Get the WGS-84 bounding box of all annotations in a set, or null if empty. */
   getBounds: (setId: string) =>

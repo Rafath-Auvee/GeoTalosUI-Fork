@@ -105,6 +105,9 @@ export function useMapSync(): void {
               } else {
                 mm.setTileLayerUrl(id, curr.tileUrl);
               }
+            } else if (curr.tileFormat === 'mvt' && mm.hasLayer(id) && curr.tileUrl) {
+              // Annotation MVT: a new ?v= after an edit — reload tiles in place.
+              mm.setTileLayerUrl(id, curr.tileUrl);
             } else {
               mm.rebuildTileLayer(id, curr);
             }
