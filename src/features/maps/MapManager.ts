@@ -907,17 +907,12 @@ export class MapManager {
       return tileLayer;
     }
 
-    // Vector annotation-set layers always use GeoJSON rendering (L.geoJSON) regardless
-    // of whether a tileUrl is present. The tileUrl is kept in the config only for
-    // the pointer/bounds mechanism; actual vector rendering goes through the
-    // GeoJSON path which works reliably with Leaflet's standard SVG renderer.
-    if (config.sourceType === 'annotation_set') {
+    // Vector annotation-set layers render from MVT tiles (viewport-driven) via
+    // createTileLayer → createMvtLayer. Only fall back to the whole-set GeoJSON
+    // path for configs without a tile URL that had data pushed explicitly.
+    if (config.sourceType === 'annotation_set' && !(config.tileFormat === 'mvt' && config.tileUrl)) {
       const data = this.dataStore.get(config.id) as GeoJSONFeatureCollection | undefined;
       if (!data) return null;
-      // No felt-pin pointer wrapping here: the cluster layer built inside
-      // createAnnotationSetLayer is the low-zoom (< ANNOTATION_CLUSTER_ZOOM)
-      // representation, so a single bounds pin would be redundant with the
-      // count bubbles. Raster-mask sets still go through the tile path above.
       return this.createAnnotationSetLayer(config, data);
     }
 
@@ -1073,32 +1068,6 @@ export class MapManager {
       return null;
     }
 
-    // Inject the Clerk Bearer token into annotation tile requests by wrapping
-    // window.fetch once. This is simpler and more reliable than subclassing
-    // L.VectorGrid.Protobuf, and avoids rendering failures from prototype
-    // extension issues in minified builds.
-    // The interceptor only adds the header for our annotation tile URLs;
-    // all other requests pass through unchanged.
-    if (typeof window !== 'undefined' && !(window as any).__awfAnnotationFetchWrapped) {
-      const _origFetch = window.fetch.bind(window);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (window as any).fetch = async function (input: RequestInfo | URL, init?: RequestInit) {
-        const url = typeof input === 'string' ? input
-          : input instanceof URL ? input.toString()
-          : (input as Request).url;
-        if (url.includes('/annotation-sets/') && url.includes('/tiles/')) {
-          const token = await getAuthToken();
-          if (token) {
-            const headers = new Headers((init as RequestInit | undefined)?.headers);
-            headers.set('Authorization', `Bearer ${token}`);
-            init = { ...(init ?? {}), headers };
-          }
-        }
-        return _origFetch(input, init);
-      };
-      (window as any).__awfAnnotationFetchWrapped = true;
-    }
-
     const vg = vectorGrid.protobuf(config.tileUrl, {
       pane: 'awakeforest-annotations',
       interactive: true,
@@ -1110,6 +1079,18 @@ export class MapManager {
         },
       },
     }) as L.Layer;
+
+    // Clerk token per tile request on this layer only (no global fetch patch).
+    // VectorGrid reads options.fetchOptions synchronously inside its tile
+    // fetch, right after the awaited token, so concurrent tiles stay correct.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const vgAny = vg as any;
+    const fetchTile = vgAny._getVectorTilePromise;
+    vgAny._getVectorTilePromise = async (coords: unknown) => {
+      const token = await getAuthToken();
+      vgAny.options.fetchOptions = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+      return fetchTile.call(vgAny, coords);
+    };
 
     // Wire click → right panel. VectorGrid fires `click` with `layer.properties`.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
