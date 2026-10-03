@@ -13,7 +13,29 @@
 import { useEffect } from 'react';
 import { useMapLayersStore } from '@/stores/mapLayersStore';
 import { annotationSetsApi, buildRasterTileUrl } from '@/lib/api/annotation-sets';
+import { annotationSchemasApi } from '@/lib/api/annotation-schemas';
+import { buildClassStyles } from '@/features/maps/utils/annotationStyles';
 import { getMapManager } from '@/features/maps/MapManager';
+
+/**
+ * Fill in class colors for layers added without them (e.g. a verified set
+ * created during the session). MVT layers have no feature list in the
+ * browser, so colors come from the set's schema classes; useMapSync rebuilds
+ * the MVT layer when classStyles change.
+ */
+async function hydrateClassStylesFromSchema(layerId: string, setId: string): Promise<void> {
+  if (useMapLayersStore.getState().layers[layerId]?.classStyles) return;
+  const annotationSet = await annotationSetsApi.get(setId);
+  if (!annotationSet.schema_id) return;
+  const { items } = await annotationSchemasApi.getClasses(annotationSet.schema_id);
+  const classStyles = buildClassStyles(items);
+  if (!classStyles) return;
+  useMapLayersStore.setState((s) => {
+    const cur = s.layers[layerId];
+    if (!cur || cur.classStyles) return {};
+    return { layers: { ...s.layers, [layerId]: { ...cur, classStyles } } };
+  });
+}
 
 /**
  * Vector annotation sets render from MVT tiles. Layers restored from a saved
@@ -36,6 +58,7 @@ function loadVectorAnnotationSet(id: string, setId: string): void {
       },
     };
   });
+  void hydrateClassStylesFromSchema(id, setId).catch(() => {});
 }
 
 export function useAnnotationSync(): void {
