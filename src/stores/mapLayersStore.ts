@@ -394,7 +394,9 @@ export const useMapLayersStore = create<MapLayersState>()(
       if (!layer || layer.isRasterMask) return;
       const annotationSet = await annotationSetsApi.get(setId);
       const tileUrl = annotationSetsApi.getTileUrlTemplate(setId, annotationSet.tile_version);
-      set((s) => (s.layers[id] ? { layers: { ...s.layers, [id]: { ...s.layers[id], tileUrl } } } : s));
+      set((s) => (s.layers[id]
+        ? { layers: { ...s.layers, [id]: { ...s.layers[id], tileUrl, tileFormat: 'mvt' as const, mvtLayerName: 'annotation_set_mvt' } } }
+        : s));
     },
     clearAnnotationSetRefresh: () => set({ refreshAnnotationSetId: null }),
 
