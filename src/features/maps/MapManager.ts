@@ -1030,15 +1030,11 @@ export class MapManager {
 
   // ── Annotation set: MVT vector tile layer ───────────────────────────────────
 
-  /**
-   * Create a Leaflet.VectorGrid.Protobuf layer for an annotation-set MVT
-   * endpoint. Uses the `awakeforest-annotations` pane (z:150) so it draws on
-   * top of raster tiles. Fetches tiles through a Clerk-authed subclass that
-   * mirrors the pattern in `createAuthTileLayer`.
-   */
-  private createMvtLayer(config: LayerConfig): L.Layer | null {
-    if (!this.L || !config.tileUrl || !config.mvtLayerName) return null;
+  /** Load leaflet.vectorgrid once and return `L.vectorGrid`, or null if it failed. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private loadVectorGrid(): any {
     const L = this.L;
+    if (!L) return null;
     // leaflet.vectorgrid is a UMD bundle that expects a global `L` at
     // eval time. Expose Leaflet on window, then require the plugin lazily
     // (first call only). Subsequent calls reuse L.vectorGrid.
@@ -1058,8 +1054,6 @@ export class MapManager {
         return null;
       }
     }
-    const layerName = config.mvtLayerName;
-
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vectorGrid: any = (L as any).vectorGrid;
     if (!vectorGrid?.protobuf) {
@@ -1067,6 +1061,58 @@ export class MapManager {
       console.error('leaflet.vectorgrid is not loaded');
       return null;
     }
+    return vectorGrid;
+  }
+
+  /** Clerk token per tile request on this layer only (no global fetch patch).
+   *  VectorGrid reads options.fetchOptions synchronously inside its tile
+   *  fetch, right after the awaited token, so concurrent tiles stay correct. */
+  private withTileAuth(vg: L.Layer): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const vgAny = vg as any;
+    const fetchTile = vgAny._getVectorTilePromise;
+    vgAny._getVectorTilePromise = async (coords: unknown) => {
+      const token = await getAuthToken();
+      vgAny.options.fetchOptions = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+      return fetchTile.call(vgAny, coords);
+    };
+  }
+
+  /** Read-only VectorGrid for a public reference layer (no click handling). */
+  createReferenceLayer(ref: {
+    tileUrl: string;
+    layerName: string;
+    attribution?: string | null;
+    minZoom: number;
+    maxNativeZoom: number;
+  }): L.Layer | null {
+    const vectorGrid = this.loadVectorGrid();
+    if (!vectorGrid) return null;
+    const style = { weight: 1, color: '#0e7490', fill: true, fillColor: '#22d3ee', fillOpacity: 0.25 };
+    const vg = vectorGrid.protobuf(ref.tileUrl, {
+      pane: 'awakeforest-data',
+      interactive: false,
+      minZoom: ref.minZoom,
+      maxNativeZoom: ref.maxNativeZoom,
+      attribution: ref.attribution ?? undefined,
+      vectorTileLayerStyles: { [ref.layerName]: style },
+    }) as L.Layer;
+    this.withTileAuth(vg);
+    return vg;
+  }
+
+  /**
+   * Create a Leaflet.VectorGrid.Protobuf layer for an annotation-set MVT
+   * endpoint. Uses the `awakeforest-annotations` pane (z:150) so it draws on
+   * top of raster tiles. Fetches tiles through a Clerk-authed subclass that
+   * mirrors the pattern in `createAuthTileLayer`.
+   */
+  private createMvtLayer(config: LayerConfig): L.Layer | null {
+    if (!this.L || !config.tileUrl || !config.mvtLayerName) return null;
+    const L = this.L;
+    const vectorGrid = this.loadVectorGrid();
+    if (!vectorGrid) return null;
+    const layerName = config.mvtLayerName;
 
     const vg = vectorGrid.protobuf(config.tileUrl, {
       pane: 'awakeforest-annotations',
@@ -1079,18 +1125,7 @@ export class MapManager {
         },
       },
     }) as L.Layer;
-
-    // Clerk token per tile request on this layer only (no global fetch patch).
-    // VectorGrid reads options.fetchOptions synchronously inside its tile
-    // fetch, right after the awaited token, so concurrent tiles stay correct.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const vgAny = vg as any;
-    const fetchTile = vgAny._getVectorTilePromise;
-    vgAny._getVectorTilePromise = async (coords: unknown) => {
-      const token = await getAuthToken();
-      vgAny.options.fetchOptions = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
-      return fetchTile.call(vgAny, coords);
-    };
+    this.withTileAuth(vg);
 
     // Wire click → right panel. VectorGrid fires `click` with `layer.properties`.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
