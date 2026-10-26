@@ -19,6 +19,10 @@ import type { GeoJSONGeometry } from '@/types/geo';
 import { annotationSetsApi } from '@/lib/api/annotation-sets';
 import { buildTileUrlFromConfig } from '@/features/maps/utils/datasetItemLayer';
 import { getNextZIndex, resetZIndex } from './layerZIndex';
+import { useInteractiveStore } from '@/features/maps/interactive/store';
+
+/** While Interactive annotation mode is on, map clicks must not switch or close the right panel. */
+const modeLocked = () => useInteractiveStore.getState().active;
 
 // ── Feature-click tracking (module-level) ──────────────────────────────────────
 let _featureClickTime = 0;
@@ -185,6 +189,14 @@ interface MapLayersState {
   capturedBboxPrompt: [number, number, number, number] | null;
   setCapturedBboxPrompt: (bbox: [number, number, number, number] | null) => void;
 
+  /** Same drawn-rectangle mechanism as bboxPromptDrawMode, but a separate slot
+   *  so the embedding-search reference box and SAM3 bbox prompts (which can
+   *  both live in AoiInferencePanel) never consume each other's draw. */
+  embedRefDrawMode: boolean;
+  setEmbedRefDrawMode: (active: boolean) => void;
+  capturedEmbedRefBbox: [number, number, number, number] | null;
+  setCapturedEmbedRefBbox: (bbox: [number, number, number, number] | null) => void;
+
   selectedAoiLayerId: string | null;
   aoiSelectedDatasetIds: string[];
   openAoiPanel: (aoiLayerId: string) => void;
@@ -305,6 +317,8 @@ export const useMapLayersStore = create<MapLayersState>()(
     aoiDrawMode: false,
     bboxPromptDrawMode: false,
     capturedBboxPrompt: null,
+    embedRefDrawMode: false,
+    capturedEmbedRefBbox: null,
     selectedAoiLayerId: null,
     aoiSelectedDatasetIds: [],
     aoiTimelineEnabled: false,
@@ -389,7 +403,11 @@ export const useMapLayersStore = create<MapLayersState>()(
     clearAnnotationSetRefresh: () => set({ refreshAnnotationSetId: null }),
 
     setBackendLayerId: (datasetId, layerId) =>
-      set((s) => ({ backendLayerIds: { ...s.backendLayerIds, [datasetId]: layerId } })),
+      set((s) =>
+        s.backendLayerIds[datasetId] === layerId
+          ? s
+          : { backendLayerIds: { ...s.backendLayerIds, [datasetId]: layerId } },
+      ),
 
     markAutoSaveDirty: () => set({ autoSaveDirty: true }),
     clearAutoSaveDirty: () => set({ autoSaveDirty: false }),
@@ -407,12 +425,17 @@ export const useMapLayersStore = create<MapLayersState>()(
 
     setBboxPromptDrawMode: (active: boolean) => set({ bboxPromptDrawMode: active }),
     setCapturedBboxPrompt: (bbox) => set({ capturedBboxPrompt: bbox }),
+    setEmbedRefDrawMode: (active: boolean) => set({ embedRefDrawMode: active }),
+    setCapturedEmbedRefBbox: (bbox) => set({ capturedEmbedRefBbox: bbox }),
 
     createAoiLayer: (geometry, bbox) => {
       const state = get();
-      const aoiCount = Object.values(state.layers).filter((l) => l.type === 'aoi').length;
+      // One more than the highest "AOI n" on the map, so deleting AOI 2 while AOI 5 exists gives AOI 6, not a second AOI 5.
+      const highest = Object.values(state.layers)
+        .filter((l) => l.type === 'aoi')
+        .reduce((max, l) => Math.max(max, Number(/^AOI (\d+)$/.exec(l.name ?? '')?.[1] ?? 0)), 0);
       const id = `aoi-${Date.now()}`;
-      const name = `AOI ${aoiCount + 1}`;
+      const name = `AOI ${highest + 1}`;
       const zIndex = getNextZIndex();
 
       set((s) => ({
@@ -783,6 +806,7 @@ export const useMapLayersStore = create<MapLayersState>()(
     setCurrentZoom: (zoom: number) => set({ currentZoom: zoom }),
 
     focusLayer: (layerId) => {
+      if (modeLocked()) return;
       const layer = get().layers[layerId];
       if (!layer) return;
       const updates: Partial<MapLayersState> = {
@@ -1192,12 +1216,21 @@ export const useMapLayersStore = create<MapLayersState>()(
       set((s) => s.pendingAnnotation ? { pendingAnnotation: { ...s.pendingAnnotation, attributes: s.pendingAnnotation.attributes.filter((_, i) => i !== idx) } } : s),
     clearPendingAnnotation: () => set({ pendingAnnotation: null, rightPanelMode: 'none' }),
 
-    openFeaturePanel: (feature) => set({ rightPanelMode: 'feature', selectedFeature: feature, selectedLayerId: feature.layerId ?? null }),
+    openFeaturePanel: (feature) => {
+      if (modeLocked()) return;
+      set({ rightPanelMode: 'feature', selectedFeature: feature, selectedLayerId: feature.layerId ?? null });
+    },
     openStylePanel: (layerId) => set({ rightPanelMode: 'style', selectedLayerId: layerId, selectedFeature: null }),
     openMeasurementPanel: () => set({ rightPanelMode: 'measurement', selectedFeature: null, selectedLayerId: null }),
     showAnnotationPanel: () => set((s) => s.pendingAnnotation ? { rightPanelMode: 'new-annotation' } : s),
-    closeRightPanel: () => set({ rightPanelMode: 'none', selectedLayerId: null, selectedFeature: null, selectedDatasetId: null, selectedItemsDatasetId: null, selectedAnnotationSetId: null }),
-    layerOnMapClick: (layerId) => set({ selectedLayerId: layerId, rightPanelMode: 'style', selectedFeature: null }),
+    closeRightPanel: () => {
+      if (modeLocked()) return;
+      set({ rightPanelMode: 'none', selectedLayerId: null, selectedFeature: null, selectedDatasetId: null, selectedItemsDatasetId: null, selectedAnnotationSetId: null });
+    },
+    layerOnMapClick: (layerId) => {
+      if (modeLocked()) return;
+      set({ selectedLayerId: layerId, rightPanelMode: 'style', selectedFeature: null });
+    },
     toggleMeasurement: () =>
       set((s) => {
         const newActive = !s.measurementActive;

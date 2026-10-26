@@ -85,6 +85,7 @@ export const EP = {
     detail: (id: string) => `datasets/${id}`,
     update: (id: string) => `datasets/${id}`,
     delete: (id: string) => `datasets/${id}`,
+    purge: (id: string) => `datasets/${id}/purge`,
     items: (id: string) => `datasets/${id}/items`,
     itemTileConfig: (datasetId: string, itemId: string) =>
       `datasets/${datasetId}/items/${itemId}/tile-config`,
@@ -140,6 +141,7 @@ export const EP = {
   annotationSets: {
     listByProject: (projectId: string) => `projects/${projectId}/annotation-sets`,
     listByOrg: () => `annotation-sets`,
+    bulkPurge: 'annotation-sets/bulk-purge',
     listByMap: (mapId: string) => `maps/${mapId}/annotation-sets`,
     /** Attach a set to a map (creates the mount so the layer persists). */
     mount: (mapId: string) => `maps/${mapId}/annotation-sets/mount`,
@@ -147,6 +149,8 @@ export const EP = {
     unmount: (mapId: string, setId: string) =>
       `maps/${mapId}/annotation-sets/${setId}/unmount`,
     detail: (id: string) => `annotation-sets/${id}`,
+    /** Permanently delete a set and all its annotations (admin-only, irreversible). */
+    purge: (id: string) => `annotation-sets/${id}/purge`,
     reviewStatus: (id: string) => `annotation-sets/${id}/review-status`,
     tiles: (id: string) => `annotation-sets/${id}/tiles/{z}/{x}/{y}.pbf`,
     bounds: (id: string) => `annotation-sets/${id}/bounds`,
@@ -238,6 +242,56 @@ export const EP = {
     run: 'inference',
     adapters: 'inference/adapters',
     adapterSchema: (name: string) => `inference/adapters/${name}/schema`,
+  },
+
+  embeddings: {
+    create: 'embeddings',
+    detail: (id: string) => `embeddings/${id}`,
+    search: 'embeddings/search',
+    aoiScan: 'embeddings/aoi-scan',
+    anomalyScan: 'embeddings/anomaly-scan',
+    exemplarScan: 'embeddings/exemplar-scan',
+    autoAnnotate: 'embeddings/auto-annotate',
+  },
+
+  sam3: {
+    autoAnnotate: 'sam3/auto-annotate',
+    pointMask: 'sam3/point-mask',
+    segmentAll: 'sam3/segment-all',
+    refineSet: 'sam3/refine-annotation-set',
+    segmentAllMasks: (jobId: string) => `sam3/segment-all/${jobId}/masks`,
+    segmentAllCancel: (jobId: string) => `sam3/segment-all/${jobId}/cancel`,
+    interactiveCommit: 'sam3/interactive-commit',
+    refineMasks: 'sam3/refine-masks',
+    existingInAoi: (setId: string) => `sam3/annotation-sets/${setId}/in-aoi`,
+    applyToSet: (setId: string) => `sam3/annotation-sets/${setId}/apply`,
+    maskEmbeddings: 'sam3/mask-embeddings',
+    maskClusters: (jobId: string) => `sam3/mask-embeddings/${jobId}/clusters`,
+    maskSimilar: (jobId: string) => `sam3/mask-embeddings/${jobId}/similar`,
+    maskCrops: 'sam3/mask-crops',
+    maskThumbs: (jobId: string) => `sam3/mask-embeddings/${jobId}/thumbs`,
+  },
+
+  // DINOv2 tier: shared frozen backbone + one trained head per class.
+  // finetune returns a Job (202) — poll via jobs.detail like embeddings.aoiScan.
+  dino: {
+    exportPreview: 'dino/export-preview',
+    aoiAnnotationSets: 'dino/aoi-annotation-sets',
+    yoloBases: 'dino/yolo-bases',
+    runModel: (id: string) => `dino/runs/${id}/model`,
+    runModelOnnx: (id: string) => `dino/runs/${id}/model/onnx`,
+    runModelDownload: (id: string) => `dino/runs/${id}/model/download`,
+    finetune: 'dino/finetune',
+    runs: 'dino/runs',
+    datasets: 'dino/datasets',
+    dataset: (id: string) => `dino/datasets/${id}`,
+    datasetRebuild: (id: string) => `dino/datasets/${id}/rebuild`,
+    datasetItems: (id: string) => `dino/datasets/${id}/items`,
+    datasetImage: (id: string) => `dino/datasets/${id}/image`,
+    datasetDownload: (id: string) => `dino/datasets/${id}/download`,
+    tunedConfigs: (id: string) => `dino/datasets/${id}/tuned-configs`,
+    tunedConfig: (id: string) => `dino/datasets/${id}/tuned-config`,
+    runReport: (id: string) => `dino/runs/${id}/report`,
   },
 
   analysis: {

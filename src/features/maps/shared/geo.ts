@@ -164,13 +164,20 @@ export function computeGeoStats(
     if (isRectangle) {
       const h = haversineM([ring[0][1], ring[0][0]], [ring[1][1], ring[1][0]]);
       const w = haversineM([ring[1][1], ring[1][0]], [ring[2][1], ring[2][0]]);
+      const shortSide = Math.min(h, w);
+      const longSide = Math.max(h, w);
       return {
         featureType: 'annotation-rectangle',
         stats: {
           area: fmtArea(area),
           perimeter: fmtLen(perimeter),
-          ns_span: fmtLen(Math.min(h, w)),
-          ew_span: fmtLen(Math.max(h, w)),
+          // Real-world box dimensions (width x height) — e.g. "4 m x 2.5 m".
+          // This is what actually matters for judging a box's size for
+          // training (see the fixed 518x518 model input it gets resized
+          // into), not just area/perimeter.
+          size: `${fmtLen(longSide)} x ${fmtLen(shortSide)}`,
+          ns_span: fmtLen(shortSide),
+          ew_span: fmtLen(longSide),
         },
       };
     }

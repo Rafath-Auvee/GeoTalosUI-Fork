@@ -66,16 +66,20 @@ export function useCreateAnnotation() {
   const { setIsSavingAnnotation, setError, clearPendingAnnotation } = useAnnotationStore();
 
   return useMutation({
-    mutationFn: ({ setId, classId, geometry, properties }: {
+    mutationFn: ({ setId, classId, geometry, properties, mapId }: {
       setId: string;
       classId: string;
       geometry: any; // GeoJSON geometry from drawing
       properties?: Record<string, unknown>;
+      /** Map this was drawn on, if known — lets the backend stamp AOI
+       *  provenance even in explicit-set mode (see AnnotationDrawingTools). */
+      mapId?: string;
     }) =>
       annotationSetsApi.addFeature(setId, {
         class_id: classId,
         geometry,
         properties: properties ?? null,
+        map_id: mapId ?? null,
       }),
     onMutate: () => {
       setIsSavingAnnotation(true);

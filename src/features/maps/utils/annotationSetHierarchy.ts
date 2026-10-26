@@ -52,7 +52,9 @@ export function findContainingAoiId(
   if (!extent) return null;
   let best: AoiCandidate | null = null;
   for (const aoi of aois) {
-    if (!bboxContains(aoi.bbox, extent)) continue;
+    // Model output often spills a little past the AOI edge; allow 1% of the AOI's size.
+    const slack = 0.01 * Math.max(aoi.bbox[2] - aoi.bbox[0], aoi.bbox[3] - aoi.bbox[1]);
+    if (!bboxContains(aoi.bbox, extent, Math.max(1e-7, slack))) continue;
     if (best === null || bboxArea(aoi.bbox) < bboxArea(best.bbox)) best = aoi;
   }
   return best?.id ?? null;

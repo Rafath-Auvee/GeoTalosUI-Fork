@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
-import { Layers, ChevronLeft, ChevronRight, ChevronDown, Plus, ChevronUp } from 'lucide-react';
+import { Layers, ChevronLeft, ChevronRight, ChevronDown, Plus } from 'lucide-react';
 import { AnnotationSetPicker } from './AnnotationSetPicker';
 import type { AnnotationSet as ApiAnnotationSet, AnnotationClass } from '@/types/api';
 import {
@@ -28,6 +28,7 @@ import { flyToAnnotationSet } from '../../utils/annotationSetMap';
 import { buildClassStyles, resolveClassStyle } from '../../utils/annotationStyles';
 import { annotationSetsApi, buildRasterTileUrl } from '@/lib/api/annotation-sets';
 import { datasetsApi } from '@/lib/api/datasets';
+import { useModeLock } from '../../interactive/lock';
 import { MC, MAP_Z } from '../../mapColors';
 import { useIsCompact } from '@/hooks/use-mobile';
 import { asNonEmptyText, getClassDescription } from '@/features/maps/utils/mapTextUtils';
@@ -36,6 +37,7 @@ import {
   type AoiCandidate,
   type Bbox,
 } from '@/features/maps/utils/annotationSetHierarchy';
+import { useAnnotationSetExtents } from '@/features/maps/hooks/useAnnotationSetExtents';
 
 type PanelTab = 'layers' | 'legend';
 const CLASS_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -61,6 +63,7 @@ export interface LeftPanelProps {
   annotationSets?: AnnotationSetMount[];
   onRemoveDataset?: (datasetId: string) => void;
   onRemoveAnnotationSet?: (setId: string) => void;
+  onPurgeAnnotationSet?: (setId: string) => void;
   onRemoveAoi?: (aoiLayerId: string) => void;
   onRenameAnnotationSet?: (setId: string, newName: string) => void;
 }
@@ -79,15 +82,17 @@ export function LeftPanel({
   annotationSets = [],
   onRemoveDataset,
   onRemoveAnnotationSet,
+  onPurgeAnnotationSet,
   onRemoveAoi,
   onRenameAnnotationSet,
 }: LeftPanelProps) {
+  const lock = useModeLock<HTMLDivElement>();
   const [tab, setTab] = useState<PanelTab>('layers');
   // Which AOI layers are expanded to reveal their nested child layers.
   // Default collapsed so the list stays tidy until the user opts in.
   const [expandedAois, setExpandedAois] = useState<Record<string, boolean>>({});
   const [selectedSchemaId, setSelectedSchemaId] = useState<string | null>(null);
-  const [expandedSchemas, setExpandedSchemas] = useState<Record<string, boolean>>({});
+  const [, setExpandedSchemas] = useState<Record<string, boolean>>({});
   const isCompact = useIsCompact();
   const queryClient = useQueryClient();
   const [legendClassMeta, setLegendClassMeta] = useState<Record<string, { name: string; description?: string }>>({});
@@ -325,70 +330,82 @@ export function LeftPanel({
   // ── Build a hierarchical layer list for the "all layers" view ──
   // - Item layers (item-*) are nested inside their parent dataset card, not shown top-level
   // - Child layers (with parentAoiId) are rendered after their parent AOI
-  const allLayerEntries = Object.entries(layers)
-    .filter(([id]) => !id.startsWith('item-'))
-    .sort(([, a], [, b]) => b.zIndex - a.zIndex); // top of stack first
+  //
+  // Memoized: `layers` changes on every per-field edit (visibility toggle,
+  // opacity drag, z-index reorder, style edit) and without this the entire
+  // tree — including the O(n·m) AOI-containment derivation below — was
+  // rebuilt from scratch on every one of those edits, for every layer in
+  // the panel. That's the main source of left-panel sluggishness on maps
+  // with many layers.
+  // Live per-set extents: the mount list can be stale after a reload or a model run, which left sets un-nested.
+  const liveExtents = useAnnotationSetExtents(layers);
+  const { sortedLayerEntries, sortedIds, childLayersByParent } = useMemo(() => {
+    const allLayerEntries = Object.entries(layers)
+      .filter(([id]) => !id.startsWith('item-'))
+      .sort(([, a], [, b]) => b.zIndex - a.zIndex); // top of stack first
 
-  // AOI auto-nest: the backend has no AOI↔annotation-set link, so we derive one
-  // here — an annotation-set layer whose extent falls entirely inside an AOI's
-  // bbox is shown nested under that AOI. Smallest containing AOI wins.
-  const aoiCandidates: AoiCandidate[] = Object.entries(layers)
-    .filter(([, l]) => l.type === 'aoi' && Array.isArray(l.aoiBbox))
-    .map(([id, l]) => ({ id, bbox: l.aoiBbox as Bbox }));
+    // AOI auto-nest: the backend has no AOI↔annotation-set link, so we derive one
+    // here — an annotation-set layer whose extent falls entirely inside an AOI's
+    // bbox is shown nested under that AOI. Smallest containing AOI wins.
+    const aoiCandidates: AoiCandidate[] = Object.entries(layers)
+      .filter(([, l]) => l.type === 'aoi' && Array.isArray(l.aoiBbox))
+      .map(([id, l]) => ({ id, bbox: l.aoiBbox as Bbox }));
 
-  const derivedAoiParent = new Map<string, string>();
-  if (aoiCandidates.length > 0) {
-    for (const [id, layer] of Object.entries(layers)) {
-      if (layer.sourceType !== 'annotation_set' || layer.parentAoiId) continue;
-      const setId = id.startsWith('annset-') ? id.replace('annset-', '') : null;
-      const set = setId ? annotationSets.find((s) => s.annotation_set_id === setId) : null;
-      const extent = (set?.extent_4326 ?? layer.bounds ?? null) as Bbox | null;
-      const aoiId = findContainingAoiId(extent, aoiCandidates);
-      if (aoiId) derivedAoiParent.set(id, aoiId);
-    }
-  }
-
-  // Separate top-level layers from child layers.
-  // A layer is a "child" if:
-  //  • it has parentAoiId (AOI-bounded dataset), OR
-  //  • it is an annotation_set layer nested under a dataset or an AOI (derived).
-  const isAnnSetChild = (id: string, layer: typeof layers[string]) =>
-    layer.sourceType === 'annotation_set' &&
-    ((!!layer.parentDatasetId && !!layers[layer.parentDatasetId]) || derivedAoiParent.has(id));
-
-  const topLevelEntries = allLayerEntries.filter(
-    ([id, layer]) => !layer.parentAoiId && !isAnnSetChild(id, layer),
-  );
-  const childLayersByParent = new Map<string, typeof allLayerEntries>();
-  for (const entry of allLayerEntries) {
-    const [id, layer] = entry;
-    const parentId =
-      layer.parentAoiId ??
-      derivedAoiParent.get(id) ??
-      (isAnnSetChild(id, layer) ? layer.parentDatasetId : undefined);
-    if (parentId) {
-      const existing = childLayersByParent.get(parentId) ?? [];
-      existing.push(entry);
-      childLayersByParent.set(parentId, existing);
-    }
-  }
-
-  // Build flattened display list: parent followed by its children
-  const sortedLayerEntries: Array<[string, typeof layers[string], boolean]> = [];
-  for (const [id, layer] of topLevelEntries) {
-    sortedLayerEntries.push([id, layer, false]); // false = not a child layer
-    const children = childLayersByParent.get(id);
-    if (children) {
-      // AOI children are hidden behind the AOI's expand arrow; other parents
-      // (e.g. datasets) keep their existing always-visible nesting.
-      if (layer.type === 'aoi' && !expandedAois[id]) continue;
-      for (const [childId, childLayer] of children) {
-        sortedLayerEntries.push([childId, childLayer, true]); // true = child layer
+    const derivedAoiParent = new Map<string, string>();
+    if (aoiCandidates.length > 0) {
+      for (const [id, layer] of Object.entries(layers)) {
+        if (layer.sourceType !== 'annotation_set' || layer.parentAoiId) continue;
+        const setId = id.startsWith('annset-') ? id.replace('annset-', '') : null;
+        const set = setId ? annotationSets.find((s) => s.annotation_set_id === setId) : null;
+        const extent = ((setId ? liveExtents.get(setId) : undefined) ?? set?.extent_4326 ?? layer.bounds ?? null) as Bbox | null;
+        const aoiId = findContainingAoiId(extent, aoiCandidates);
+        if (aoiId) derivedAoiParent.set(id, aoiId);
       }
     }
-  }
 
-  const sortedIds = sortedLayerEntries.map(([id]) => id);
+    // Separate top-level layers from child layers.
+    // A layer is a "child" if:
+    //  • it has parentAoiId (AOI-bounded dataset), OR
+    //  • it is an annotation_set layer nested under a dataset or an AOI (derived).
+    const isAnnSetChild = (id: string, layer: typeof layers[string]) =>
+      layer.sourceType === 'annotation_set' &&
+      ((!!layer.parentDatasetId && !!layers[layer.parentDatasetId]) || derivedAoiParent.has(id));
+
+    const topLevelEntries = allLayerEntries.filter(
+      ([id, layer]) => !layer.parentAoiId && !isAnnSetChild(id, layer),
+    );
+    const childLayersByParent = new Map<string, typeof allLayerEntries>();
+    for (const entry of allLayerEntries) {
+      const [id, layer] = entry;
+      const parentId =
+        layer.parentAoiId ??
+        derivedAoiParent.get(id) ??
+        (isAnnSetChild(id, layer) ? layer.parentDatasetId : undefined);
+      if (parentId) {
+        const existing = childLayersByParent.get(parentId) ?? [];
+        existing.push(entry);
+        childLayersByParent.set(parentId, existing);
+      }
+    }
+
+    // Build flattened display list: parent followed by its children
+    const sortedLayerEntries: Array<[string, typeof layers[string], boolean]> = [];
+    for (const [id, layer] of topLevelEntries) {
+      sortedLayerEntries.push([id, layer, false]); // false = not a child layer
+      const children = childLayersByParent.get(id);
+      if (children) {
+        // AOI children are hidden behind the AOI's expand arrow; other parents
+        // (e.g. datasets) keep their existing always-visible nesting.
+        if (layer.type === 'aoi' && !expandedAois[id]) continue;
+        for (const [childId, childLayer] of children) {
+          sortedLayerEntries.push([childId, childLayer, true]); // true = child layer
+        }
+      }
+    }
+
+    const sortedIds = sortedLayerEntries.map(([id]) => id);
+    return { sortedLayerEntries, sortedIds, childLayersByParent };
+  }, [layers, annotationSets, expandedAois, liveExtents]);
 
   // ── DnD sensors (require 5px move to start drag — avoids accidental drags) ──
   const sensors = useSensors(
@@ -627,8 +644,18 @@ export function LeftPanel({
                       const isAnnotationSetLayer = layer.sourceType === 'annotation_set';
                       let handleRemove: (() => void) | undefined;
 
-                      if (isChild) {
-                        // Child layers always removable via removeLayer
+                      if (isChild && isAnnotationSetLayer && annSetId && onRemoveAnnotationSet) {
+                        // An annotation set shown nested under an AOI (derivedAoiParent)
+                        // or a dataset (parentDatasetId) is still a real backend mount
+                        // (map_annotation_sets), not an ephemeral child — unlike an
+                        // AOI-bounded dataset child, which has no backend layer row at
+                        // all. Falling through to the generic isChild branch below used
+                        // removeLayer (local-state only), so the mount was never
+                        // unmounted server-side and the set reappeared on next reload.
+                        handleRemove = () => onRemoveAnnotationSet(annSetId);
+                      } else if (isChild) {
+                        // Other child layers (e.g. AOI-bounded dataset children) have no
+                        // backend layer row of their own — local removal is correct.
                         handleRemove = () => removeLayer(id);
                       } else if (layer.type === 'aoi' && onRemoveAoi) {
                         // AOI layers use the API callback if available
@@ -672,6 +699,12 @@ export function LeftPanel({
                         ? (newName: string) => onRenameAnnotationSet(annSetId, newName)
                         : undefined;
 
+                      // Permanent delete handler (annotation sets only) — separate
+                      // from handleRemove, which only unmounts from this map.
+                      const handlePurge = isAnnotationSetLayer && annSetId && onPurgeAnnotationSet
+                        ? () => onPurgeAnnotationSet(annSetId)
+                        : undefined;
+
                       return (
                         <div
                           key={id}
@@ -708,6 +741,7 @@ export function LeftPanel({
                                 annotationSet={annSet ?? undefined}
                                 mapId={mapId}
                                 onRemove={handleRemove}
+                                onPurge={handlePurge}
                                 onRename={handleRename}
                                 aoiExpanded={aoiToggle ? !!expandedAois[id] : undefined}
                                 onToggleAoiExpand={aoiToggle}
@@ -1064,7 +1098,9 @@ export function LeftPanel({
     <>
       {/* Floating panel */}
       <div
+        ref={lock.ref}
         style={{
+          ...lock.style,
           position: 'absolute',
           top: panelTop,
           left: 8,
@@ -1091,7 +1127,9 @@ export function LeftPanel({
           onClick={onToggle}
           title="Show layers"
           aria-label="Show layers panel"
+          disabled={lock.locked}
           style={{
+            ...lock.style,
             position: 'absolute',
             left: 0,
             top: panelTop + 52,

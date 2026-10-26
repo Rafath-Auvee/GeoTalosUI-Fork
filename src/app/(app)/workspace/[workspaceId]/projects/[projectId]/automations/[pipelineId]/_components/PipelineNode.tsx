@@ -197,14 +197,22 @@ const PICKER_CONFIG: Record<string, {
   /** Name of another config field this picker depends on (e.g. dataset_items
    *  needs dataset_id selected first). Without a value the query is skipped. */
   dependsOn?: string;
-  useItems: (projectId: string, dependentValue?: string) => PickerResult;
+  /** When true, the picker forwards the (debounced) search text to `useItems`
+   *  so results are filtered server-side rather than only client-side. Needed
+   *  for entities that can exceed one page (e.g. datasets). */
+  serverSearch?: boolean;
+  useItems: (projectId: string, dependentValue?: string, search?: string) => PickerResult;
 }> = {
   dataset: {
     label: 'Dataset',
-    useItems: (projectId) => {
+    serverSearch: true,
+    useItems: (_projectId, _dep, search) => {
+      // Datasets are org-scoped (no project_id column); org comes from the JWT.
+      // `q` searches by name server-side; limit=100 (API max) is the ceiling the
+      // client-side filter works within between searches.
       const { data, isLoading } = useQuery({
-        queryKey: qk.datasets.list({ project_id: projectId, status: 'ready' }),
-        queryFn: () => datasetsApi.list({ project_id: projectId, status: 'ready' }),
+        queryKey: qk.datasets.list({ status: 'ready', q: search ?? '', limit: 100 }),
+        queryFn: () => datasetsApi.list({ status: 'ready', q: search || undefined, limit: 100 }),
         staleTime: 30_000,
       });
       return { data: data as { items?: PickerItem[] } | undefined, isLoading };
@@ -280,7 +288,7 @@ const PICKER_CONFIG: Record<string, {
     useItems: () => {
       const { data, isLoading } = useQuery({
         queryKey: qk.annotationSchemas.list(),
-        queryFn: () => annotationSchemasApi.list(),
+        queryFn: () => annotationSchemasApi.list(100),
         staleTime: 30_000,
       });
       return { data: data as { items?: PickerItem[] } | undefined, isLoading };
@@ -306,7 +314,7 @@ const PICKER_CONFIG: Record<string, {
     useItems: () => {
       const { data, isLoading } = useQuery({
         queryKey: ['styles'],
-        queryFn: () => stylesApi.list(),
+        queryFn: () => stylesApi.list(100),
         staleTime: 30_000,
       });
       return { data: data as { items?: PickerItem[] } | undefined, isLoading };
@@ -335,6 +343,17 @@ function EntityPicker({
   const { projectId } = usePipelineContext();
   const cfg = PICKER_CONFIG[pickerType];
 
+  // Search text for the in-node combobox. `search` drives the client-side
+  // filter (instant); `debouncedSearch` is forwarded to server-search pickers
+  // (e.g. datasets) so we don't refetch on every keystroke.
+  // Declared before the early returns below so hook order never changes.
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(search), 250);
+    return () => window.clearTimeout(t);
+  }, [search]);
+
   if (!cfg) {
     return (
       <div style={{ fontSize: '10px', color: '#6b5d4e' }}>
@@ -356,7 +375,12 @@ function EntityPicker({
   const dependentValue = cfg.dependsOn
     ? (parentConfig[cfg.dependsOn] as string | undefined)
     : undefined;
-  const { data, isLoading } = cfg.useItems(projectId, dependentValue);
+
+  const { data, isLoading } = cfg.useItems(
+    projectId,
+    dependentValue,
+    cfg.serverSearch ? debouncedSearch : undefined,
+  );
   const items = data?.items ?? [];
 
   // Block multi-select rendering until the parent dependency is set.
@@ -393,42 +417,194 @@ function EntityPicker({
   }
 
   return (
-    <div style={{ fontSize: '10px', color: '#6b5d4e' }}>
+    <SingleEntityPicker
+      label={label}
+      placeholder={`Select ${cfg.label.toLowerCase()}...`}
+      items={items}
+      isLoading={isLoading}
+      value={value}
+      onChange={onChange}
+      search={search}
+      onSearchChange={setSearch}
+      onOpenChange={onMenuOpenChange}
+      accent={accent}
+    />
+  );
+}
+
+// ── Single-select searchable picker (id → named item) ────────────────────────
+//
+// Mirrors MultiEntityPicker's inline (non-portaled) rendering: a portaled/fixed
+// overlay forces Chrome to re-rasterise ReactFlow's scaled viewport, leaving the
+// node blurry until the next pane transform. Adds a search box that filters the
+// loaded items client-side; for server-search pickers the parent also refetches.
+
+function SingleEntityPicker({
+  label,
+  placeholder,
+  items,
+  isLoading,
+  value,
+  onChange,
+  search,
+  onSearchChange,
+  onOpenChange,
+  accent = '#7f5539',
+}: {
+  label: string;
+  placeholder: string;
+  items: PickerItem[];
+  isLoading: boolean;
+  value: unknown;
+  onChange: (val: unknown) => void;
+  search: string;
+  onSearchChange: (val: string) => void;
+  onOpenChange?: (open: boolean) => void;
+  /** Node category color — used to tint in-node controls. */
+  accent?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const selectedId = (value as string) ?? '';
+  const selectedName = items.find((it) => it.id === selectedId)?.name;
+
+  const setOpenState = useCallback((next: boolean) => {
+    setOpen(next);
+    onOpenChange?.(next);
+  }, [onOpenChange]);
+
+  // Client-side filter over the loaded set (instant; complements server search).
+  const term = search.trim().toLowerCase();
+  const filtered = term
+    ? items.filter((it) => it.name.toLowerCase().includes(term))
+    : items;
+
+  // Close on outside click. Rendered inline (not portaled) — see note above.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpenState(false);
+    };
+    const id = window.setTimeout(() => document.addEventListener('mousedown', onDown), 0);
+    return () => {
+      window.clearTimeout(id);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [open, setOpenState]);
+
+  // Restore the parent node's z-index if this picker unmounts while open.
+  useEffect(() => () => onOpenChange?.(false), [onOpenChange]);
+
+  return (
+    <div ref={rootRef} style={{ fontSize: '11px', color: '#6b5d4e', position: 'relative' }}>
       <div style={{ marginBottom: '1px' }}>{label}</div>
-      <div className="relative">
-        <select
-          className="nodrag"
-          value={(value as string) ?? ''}
-          onChange={(e) => { e.stopPropagation(); onChange(e.target.value || null); }}
+      <button
+        type="button"
+        className="nodrag"
+        onClick={(e) => { e.stopPropagation(); setOpenState(!open); }}
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{
+          ...fieldStyle,
+          textAlign: 'left',
+          cursor: 'pointer',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '4px',
+          color: selectedName ? '#2e3428' : '#9a8878',
+        }}
+      >
+        <span className="truncate">{selectedName ?? placeholder}</span>
+        {isLoading
+          ? <Loader2 className="w-2.5 h-2.5 animate-spin shrink-0" style={{ color: '#9a8878' }} />
+          : <ChevronDown className="w-2.5 h-2.5 shrink-0" style={{ color: '#9a8878' }} />}
+      </button>
+      {open && (
+        <div
+          className="nodrag nowheel"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
           style={{
-            ...fieldStyle,
-            appearance: 'none',
-            paddingRight: '18px',
-            cursor: 'pointer',
-            color: value ? '#2e3428' : '#9a8878',
+            marginTop: '3px',
+            border: '1px solid #d4c0a8',
+            backgroundColor: '#fdf8f2',
+            borderRadius: '3px',
+            padding: '2px',
+            boxSizing: 'border-box',
           }}
         >
-          <option value="">
-            {isLoading ? 'Loading...' : `Select ${cfg.label.toLowerCase()}...`}
-          </option>
-          {items.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.name}
-            </option>
-          ))}
-        </select>
-        <div
-          className="absolute right-1 top-1/2 -translate-y-1/2 pointer-events-none"
-          style={{ color: '#9a8878' }}
-        >
-          {isLoading
-            ? <Loader2 className="w-2.5 h-2.5 animate-spin" />
-            : <ChevronDown className="w-2.5 h-2.5" />
-          }
+          <div className="relative" style={{ marginBottom: '2px' }}>
+            <Search
+              className="w-2.5 h-2.5 absolute left-1.5 top-1/2 -translate-y-1/2 pointer-events-none"
+              style={{ color: '#9a8878' }}
+            />
+            <input
+              type="text"
+              autoFocus
+              className="nodrag"
+              value={search}
+              onChange={(e) => { e.stopPropagation(); onSearchChange(e.target.value); }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              placeholder="Search…"
+              style={{ ...fieldStyle, paddingLeft: '18px' }}
+            />
+          </div>
+          <div style={{ maxHeight: '160px', overflowY: 'auto', overflowX: 'hidden' }}>
+            {selectedId && (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onChange(null); setOpenState(false); }}
+                style={{
+                  width: '100%',
+                  textAlign: 'left',
+                  padding: '4px 6px',
+                  color: accent,
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  borderBottom: '1px solid #ede0d4',
+                  marginBottom: '2px',
+                }}
+              >
+                Clear selection
+              </button>
+            )}
+            {filtered.length === 0 ? (
+              <div style={{ padding: '5px 6px', fontSize: '12px', color: '#9a8878' }}>
+                {isLoading ? 'Loading…' : 'No matches'}
+              </div>
+            ) : (
+              filtered.map((item) => {
+                const checked = item.id === selectedId;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="truncate"
+                    onClick={(e) => { e.stopPropagation(); onChange(item.id); setOpenState(false); }}
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '5px 6px',
+                      fontSize: '12px',
+                      color: '#2e3428',
+                      background: checked ? '#f0e8d4' : 'transparent',
+                      border: 'none',
+                      borderRadius: '2px',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {item.name}
+                  </button>
+                );
+              })
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

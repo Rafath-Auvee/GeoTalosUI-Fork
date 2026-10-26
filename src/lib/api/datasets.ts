@@ -13,8 +13,13 @@ export interface DatasetCreatePayload {
 export interface DatasetListParams {
   project_id?: string;
   status?: string;
+  /** Case-insensitive substring match on dataset name (server-side search). */
+  q?: string;
   page?: number;
   page_size?: number;
+  /** Backend pagination params (the API reads `limit`/`offset`, not `page_size`). */
+  limit?: number;
+  offset?: number;
 }
 
 export interface DatasetItemListParams {
@@ -157,6 +162,10 @@ export const datasetsApi = {
 
   delete: (id: string) =>
     apiClient.delete(EP.datasets.delete(id)).json<void>(),
+
+  /** Permanently delete a dataset: STAC entries, S3 files and rows (admin-only, irreversible). */
+  purge: (id: string) =>
+    apiClient.delete(EP.datasets.purge(id)),
 
   // ── Items ──────────────────────────────────────────────────────────────────
   listItems: (id: string, params?: DatasetItemListParams) =>

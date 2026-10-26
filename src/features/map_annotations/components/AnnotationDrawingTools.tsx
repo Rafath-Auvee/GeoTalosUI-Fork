@@ -73,12 +73,16 @@ export function AnnotationDrawingTools({
 
     try {
       if (annotationSetId) {
-        // Explicit set mode
+        // Explicit set mode — still pass mapId (when known) so the backend
+        // can stamp AOI provenance; without it, a box drawn straight into an
+        // already-open set silently loses its aoi_id (see AwakeForestProd
+        // annotation_service.create_annotation).
         await createAnnotationMutation.mutateAsync({
           setId: annotationSetId,
           classId: selectedClassId,
           geometry: pendingAnnotation.geometry as any,
           properties: pendingAnnotation.properties ?? undefined,
+          mapId,
         });
       } else if (mapId) {
         // Auto-set mode — backend finds or creates the set

@@ -33,6 +33,11 @@ export interface AnnotationFeatureCreatePayload {
   geometry: GeoJSONGeometry;
   confidence?: number | null;
   properties?: Record<string, unknown> | null;
+  /** Map this geometry was drawn on, if any — stamps soft aoi_id/aoi_name
+   *  provenance onto properties when the geometry falls inside a tracked
+   *  AOI on that map. Without it (explicit-set mode with no map context)
+   *  the annotation won't be usable in an AOI-restricted Train Head export. */
+  map_id?: string | null;
 }
 
 /** Payload for POST /maps/{mapId}/annotations — auto-resolves annotation set. */
@@ -43,6 +48,10 @@ export interface AnnotationOnMapCreatePayload {
   properties?: Record<string, unknown> | null;
   schema_id?: string | null;
   dataset_id?: string | null;
+  /** Image this geometry was drawn on. Without it, a manually-drawn
+   *  annotation isn't resolvable to a specific image once it's promoted
+   *  into a dataset-wide verified set — see AwakeForestProd migration 058. */
+  dataset_item_id?: string | null;
   set_name?: string | null;
 }
 
@@ -83,6 +92,22 @@ export const annotationSetsApi = {
     apiClient
       .get(EP.annotationSets.listByOrg(), { searchParams: toSearchParams(filters) })
       .json<{ items: AnnotationSet[] }>(),
+
+  /** Every annotation set in the org (pages of 100), with annotation counts and schema names. */
+  listAllByOrg: async (): Promise<AnnotationSet[]> => {
+    const out: AnnotationSet[] = [];
+    for (let offset = 0; ; offset += 100) {
+      const page = await apiClient
+        .get(EP.annotationSets.listByOrg(), { searchParams: { limit: 100, offset } })
+        .json<{ items: AnnotationSet[]; total: number }>();
+      out.push(...page.items);
+      if (out.length >= page.total || page.items.length === 0) return out;
+    }
+  },
+
+  /** Permanently delete many sets and their annotations in one transaction (admin-only). */
+  bulkPurge: (ids: string[]) =>
+    apiClient.post(EP.annotationSets.bulkPurge, { json: { ids } }).json<{ deleted: number; missing: string[] }>(),
 
   /** Build MVT tile URL template (literal {z}/{x}/{y} placeholders for Leaflet). */
   getTileUrlTemplate: (setId: string) =>
@@ -192,6 +217,10 @@ export const annotationSetsApi = {
   /** Delete an annotation set. */
   delete: (id: string) =>
     apiClient.delete(EP.annotationSets.detail(id)),
+
+  /** Permanently delete a set and all its annotations (admin-only, irreversible). */
+  purge: (id: string) =>
+    apiClient.delete(EP.annotationSets.purge(id)),
 
   /** Get all features in an annotation set as GeoJSON FeatureCollection. */
   getFeatures: (id: string) =>

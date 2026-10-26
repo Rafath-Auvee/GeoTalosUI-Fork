@@ -7,6 +7,11 @@ export type BasemapId = 'osm' | 'satellite' | 'light' | 'dark';
 export type DrawTool = 'point' | 'polyline' | 'polygon' | 'rectangle' | 'circle';
 
 interface MapState {
+  /** Backend map id for the map currently open in the editor — set by
+   *  MapEditorShell on mount. Lets code with no direct prop access (e.g.
+   *  LeafletMap's Geoman pm:create handler) stamp AOI provenance on
+   *  annotations drawn straight into an already-open set. */
+  mapId: string | null;
   center: [number, number];
   zoom: number;
   activeBasemapId: BasemapId;
@@ -23,6 +28,7 @@ interface MapState {
    * NOTE: the actual L.Map object is intentionally NOT stored here — see CLAUDE.md.
    */
   mapReady: boolean;
+  setMapId: (mapId: string | null) => void;
   setCenter: (center: [number, number], zoom?: number) => void;
   setActiveBasemapId: (id: BasemapId) => void;
   setActiveDrawTool: (tool: DrawTool | null) => void;
@@ -33,6 +39,7 @@ interface MapState {
 
 export const useMapStore = create<MapState>()(
   subscribeWithSelector((set) => ({
+    mapId: null,
     center: [0, 20],
     zoom: 3,
     activeBasemapId: 'osm',
@@ -43,6 +50,7 @@ export const useMapStore = create<MapState>()(
     drawnCircleRadius: null,
     mapReady: false,
 
+    setMapId: (mapId) => set({ mapId }),
     setCenter: (center, zoom) =>
       set((s) => ({ center, zoom: zoom !== undefined ? zoom : s.zoom })),
     setActiveBasemapId: (activeBasemapId) => set({ activeBasemapId }),

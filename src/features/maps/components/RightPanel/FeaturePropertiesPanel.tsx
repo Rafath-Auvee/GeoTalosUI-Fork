@@ -14,6 +14,7 @@ import { useAnnotationStore } from '@/stores/annotationStore';
 import { annotationClassesApi } from '@/lib/api/annotation-classes';
 import { annotationSchemasApi } from '@/lib/api/annotation-schemas';
 import { MC } from '../../mapColors';
+import { FeatureShapeToggle } from './FeatureShapeToggle';
 import {
   extractClassIdFromProperties,
   normalizeClassStyleDefinition,
@@ -564,6 +565,8 @@ export function FeaturePropertiesPanel({ feature, mapId }: FeaturePropertiesPane
           {feature.latlng[0].toFixed(6)}, {feature.latlng[1].toFixed(6)}
         </div>
       </div>
+
+      <FeatureShapeToggle annotationId={annotationId} properties={{ ...feature.properties, ...(fullProps ?? {}) }} />
 
       {/* Scrollable content */}
       <div style={{ flex: 1, overflowY: 'auto' }}>

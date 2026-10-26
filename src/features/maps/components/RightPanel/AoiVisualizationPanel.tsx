@@ -14,6 +14,7 @@ import { MC } from '../../mapColors';
 import type { LayerConfig } from '../../types';
 import type { GeoJSONGeometry } from '@/types/geo';
 import { AnalysisDetailHeader } from './AnalysisDetailHeader';
+import { PanelField as Field } from './PanelControls';
 
 interface AoiVisualizationPanelProps {
   aoiLayerId: string;
@@ -305,7 +306,7 @@ export function AoiVisualizationPanel({
               Filters & distribution
             </span>
             <span style={{
-              marginLeft: 'auto', fontSize: 9, fontWeight: 600,
+              marginLeft: 'auto', fontSize: 10, fontWeight: 600,
               color: MC.textSecondary, background: MC.inputBg ?? '#1e2518',
               border: `1px solid ${MC.border}`, padding: '1px 6px', borderRadius: 8,
             }}>
@@ -316,7 +317,7 @@ export function AoiVisualizationPanel({
           {vizOpen && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '8px 0' }}>
               {loading && stats.total === 0 && (
-                <p style={{ fontSize: 9, color: MC.textMuted, margin: 0 }}>
+                <p style={{ fontSize: 10, color: MC.textMuted, margin: 0 }}>
                   Loading annotation features…
                 </p>
               )}
@@ -351,7 +352,7 @@ export function AoiVisualizationPanel({
                       flex: 1, height: 6, borderRadius: 3,
                       background: 'linear-gradient(to right, hsl(0,75%,50%), hsl(60,75%,50%), hsl(120,75%,50%))',
                     }} />
-                    <span style={{ fontSize: 8, color: MC.textMuted, whiteSpace: 'nowrap' }}>
+                    <span style={{ fontSize: 10, color: MC.textMuted, whiteSpace: 'nowrap' }}>
                       low → high
                     </span>
                   </div>
@@ -367,7 +368,7 @@ export function AoiVisualizationPanel({
                 />
                 <div style={{
                   display: 'flex', justifyContent: 'space-between',
-                  fontSize: 8, color: MC.textMuted, marginTop: 2,
+                  fontSize: 10, color: MC.textMuted, marginTop: 2,
                 }}>
                   <span>0.00</span><span>0.50</span><span>1.00</span>
                 </div>
@@ -403,7 +404,7 @@ export function AoiVisualizationPanel({
                   </div>
                   <div style={{
                     display: 'flex', justifyContent: 'space-between',
-                    fontSize: 8, color: MC.textMuted, marginTop: 2,
+                    fontSize: 10, color: MC.textMuted, marginTop: 2,
                   }}>
                     <span>min {stats.minConf.toFixed(2)}</span>
                     <span>max {stats.maxConf.toFixed(2)}</span>
@@ -421,7 +422,7 @@ export function AoiVisualizationPanel({
                   />
                   <div style={{
                     display: 'flex', justifyContent: 'space-between',
-                    fontSize: 8, color: MC.textMuted, marginTop: 2,
+                    fontSize: 10, color: MC.textMuted, marginTop: 2,
                   }}>
                     <span>0</span>
                     <span>{formatAreaM2(stats.maxArea / 4)}</span>
@@ -469,7 +470,7 @@ export function AoiVisualizationPanel({
                             {count}
                           </span>
                           <span style={{
-                            fontSize: 8, color: MC.textMuted,
+                            fontSize: 10, color: MC.textMuted,
                             minWidth: 26, textAlign: 'right', flexShrink: 0,
                           }}>
                             {sharePct}%
@@ -483,7 +484,7 @@ export function AoiVisualizationPanel({
 
               <div style={{
                 display: 'flex', justifyContent: 'space-between',
-                fontSize: 9, color: MC.textMuted,
+                fontSize: 10, color: MC.textMuted,
               }}>
                 <span>{stats.visible} of {stats.total} features above filters</span>
                 <button
@@ -493,7 +494,7 @@ export function AoiVisualizationPanel({
                   style={{
                     background: 'transparent', border: 'none',
                     color: filtersDirty ? MC.accent : MC.textMuted,
-                    fontSize: 9, fontWeight: 600,
+                    fontSize: 10, fontWeight: 600,
                     cursor: filtersDirty ? 'pointer' : 'default',
                     padding: 0, textTransform: 'uppercase', letterSpacing: '0.05em',
                   }}
@@ -502,7 +503,7 @@ export function AoiVisualizationPanel({
                 </button>
               </div>
 
-              <p style={{ fontSize: 8, color: MC.textMuted, margin: 0, lineHeight: 1.4 }}>
+              <p style={{ fontSize: 10, color: MC.textMuted, margin: 0, lineHeight: 1.4 }}>
                 Aggregates across all annotation sets attached to this AOI. The
                 confidence/area filters and color mode apply live to the map for
                 every set above; per-set visibility is controlled by the eye icon.
@@ -581,7 +582,7 @@ function AnnotationSetRow({
             {layer.name ?? schemaName}
           </div>
           <div style={{
-            fontSize: 9, color: MC.textMuted,
+            fontSize: 10, color: MC.textMuted,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
             {isLoadingFeatures
@@ -636,13 +637,13 @@ function AnnotationSetRow({
                     background: color, flexShrink: 0,
                   }} />
                   <span style={{
-                    fontSize: 9, color: MC.text, flex: 1,
+                    fontSize: 10, color: MC.text, flex: 1,
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                   }} title={name}>
                     {name}
                   </span>
                   <span style={{
-                    fontSize: 9, fontWeight: 600, color: MC.text,
+                    fontSize: 10, fontWeight: 600, color: MC.text,
                     fontVariantNumeric: 'tabular-nums',
                   }}>
                     {count}
@@ -695,21 +696,6 @@ function sliderToArea(sliderVal: number, maxArea: number): number {
 function areaToSlider(areaVal: number, maxArea: number): number {
   if (maxArea <= 0 || areaVal <= 0) return 0;
   return Math.round(Math.sqrt(areaVal / maxArea) * AREA_SLIDER_MAX);
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <label style={{
-        fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-        textTransform: 'uppercase', color: MC.textMuted,
-        display: 'block', marginBottom: 3,
-      }}>
-        {label}
-      </label>
-      {children}
-    </div>
-  );
 }
 
 const iconBtnStyle: React.CSSProperties = {
