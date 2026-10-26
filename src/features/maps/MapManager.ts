@@ -1066,15 +1066,23 @@ export class MapManager {
 
   /** Clerk token per tile request on this layer only (no global fetch patch).
    *  VectorGrid reads options.fetchOptions synchronously inside its tile
-   *  fetch, right after the awaited token, so concurrent tiles stay correct. */
+   *  fetch, right after the awaited token, so concurrent tiles stay correct.
+   *  A tile that fails to load or decode becomes an empty tile. */
   private withTileAuth(vg: L.Layer): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const vgAny = vg as any;
     const fetchTile = vgAny._getVectorTilePromise;
     vgAny._getVectorTilePromise = async (coords: unknown) => {
-      const token = await getAuthToken();
-      vgAny.options.fetchOptions = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
-      return fetchTile.call(vgAny, coords);
+      try {
+        const token = await getAuthToken();
+        vgAny.options.fetchOptions = token ? { headers: { Authorization: `Bearer ${token}` } } : {};
+        return await fetchTile.call(vgAny, coords);
+      } catch {
+        // A dropped connection or a tile that cannot be decoded leaves that tile empty.
+        // VectorGrid does not catch a rejected tile promise, so it would surface as an
+        // unhandled rejection and the tile would never finish loading.
+        return { layers: {} };
+      }
     };
   }
 
