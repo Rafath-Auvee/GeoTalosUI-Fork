@@ -4,16 +4,17 @@ import { useMemo, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import {
-  Play, Loader2, Activity, BarChart3, Layers, GitCompare, ChevronDown,
+  Play, Loader2, Activity, BarChart3, Layers, GitCompare,
 } from 'lucide-react';
 import { analysisApi } from '@/lib/api/analysis';
 import { mapAoisApi } from '@/lib/api/map-aois';
 import { refreshAuthToken } from '@/lib/api/client';
 import { useMapLayersStore } from '@/stores/mapLayersStore';
 import type { GeoJSONGeometry } from '@/types/geo';
-import type { BandInfo, Dataset } from '@/types/api';
+import type { Dataset } from '@/types/api';
 import { MC } from '../../mapColors';
 import { AnalysisDetailHeader } from './AnalysisDetailHeader';
+import { BandSelectRow, PanelField, PanelSelect } from './PanelControls';
 import {
   SPECTRAL_INDICES,
   getIndexDef,
@@ -36,12 +37,6 @@ interface CommonProps {
 
 interface TemporalProps extends CommonProps {
   aoiBbox: [number, number, number, number] | undefined;
-}
-
-function bandLabel(band: BandInfo): string {
-  if (band.spectral_name) return `${band.index}: ${band.spectral_name}`;
-  if (band.description) return `${band.index}: ${band.description}`;
-  return `Band ${band.index}`;
 }
 
 export function AoiTemporalPanel({
@@ -150,38 +145,19 @@ export function AoiTemporalPanel({
 
       {/* ── Spectral index dropdown ── */}
       <div style={{ marginBottom: 10 }}>
-        <div style={{
-          fontSize: 9, fontWeight: 700, letterSpacing: '0.06em',
-          textTransform: 'uppercase', color: MC.textMuted, marginBottom: 4,
-        }}>
-          Index
-        </div>
-        <div style={{ position: 'relative' }}>
-          <select
+        <PanelField label="Index">
+          <PanelSelect
             value={indexId ?? 'rgb'}
             onChange={(e) => handleIndexChange(e.target.value === 'rgb' ? null : e.target.value)}
-            style={{
-              width: '100%', height: 28, fontSize: 11, padding: '0 22px 0 8px',
-              borderRadius: 4, border: `1px solid ${MC.border}`,
-              background: MC.inputBg, color: MC.text, cursor: 'pointer',
-              appearance: 'none', outline: 'none',
-            }}
           >
             <option value="rgb">RGB (true colour)</option>
             {supportedIndices.map((d) => (
               <option key={d.id} value={d.id}>{d.label} — {d.description}</option>
             ))}
-          </select>
-          <ChevronDown
-            size={10}
-            style={{
-              position: 'absolute', right: 7, top: '50%',
-              transform: 'translateY(-50%)', color: MC.textMuted, pointerEvents: 'none',
-            }}
-          />
-        </div>
+          </PanelSelect>
+        </PanelField>
         {indexId && supportedIndices.length === 0 && (
-          <p style={{ fontSize: 9, color: MC.textMuted, margin: '4px 0 0' }}>
+          <p style={{ fontSize: 10, color: MC.textMuted, margin: '4px 0 0' }}>
             This dataset has no bands with the spectral metadata these indices need.
           </p>
         )}
@@ -190,15 +166,18 @@ export function AoiTemporalPanel({
       {/* ── Per-role band pickers ── */}
       {indexDef && resolvedBands && (
         <div style={{ marginBottom: 10 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {indexDef.roles.map((role) => (
-            <NdviBandRow
+            <BandSelectRow
               key={role}
               label={ROLE_LABELS[role]}
+              labelWidth={44}
               bands={bands}
               value={resolvedBands[role]}
               onChange={(idx) => setOverrides((o) => ({ ...o, [role]: idx }))}
             />
           ))}
+          </div>
 
           {/* Colour legend + live threshold marker */}
           <IndexLegend def={indexDef} threshold={threshold} />
@@ -220,46 +199,6 @@ export function AoiTemporalPanel({
         )}
       </button>
     </section>
-  );
-}
-
-function NdviBandRow({
-  label, bands, value, onChange,
-}: {
-  label: string;
-  bands: BandInfo[];
-  value: number;
-  onChange: (index: number) => void;
-}) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-      <span style={{ width: 28, fontSize: 10, fontWeight: 700, color: MC.textSecondary, flexShrink: 0 }}>
-        {label}
-      </span>
-      <div style={{ position: 'relative', flex: 1 }}>
-        <select
-          value={value}
-          onChange={(e) => onChange(Number(e.target.value))}
-          style={{
-            width: '100%', height: 26, fontSize: 11, padding: '0 20px 0 8px',
-            borderRadius: 4, border: `1px solid ${MC.border}`,
-            background: MC.inputBg, color: MC.text, cursor: 'pointer',
-            appearance: 'none', outline: 'none',
-          }}
-        >
-          {bands.map((b) => (
-            <option key={b.index} value={b.index}>{bandLabel(b)}</option>
-          ))}
-        </select>
-        <ChevronDown
-          size={10}
-          style={{
-            position: 'absolute', right: 6, top: '50%',
-            transform: 'translateY(-50%)', color: MC.textMuted, pointerEvents: 'none',
-          }}
-        />
-      </div>
-    </div>
   );
 }
 
@@ -303,8 +242,8 @@ function IndexLegend({
         )}
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
-        <span style={{ fontSize: 8, color: MC.textMuted }}>{def.legendLow}</span>
-        <span style={{ fontSize: 8, color: MC.textMuted }}>{def.legendHigh}</span>
+        <span style={{ fontSize: 10, color: MC.textMuted }}>{def.legendLow}</span>
+        <span style={{ fontSize: 10, color: MC.textMuted }}>{def.legendHigh}</span>
       </div>
     </div>
   );
@@ -348,7 +287,7 @@ function ThresholdSlider({
         style={{ width: '100%', accentColor: MC.accent, opacity: enabled ? 1 : 0.4, cursor: enabled ? 'pointer' : 'not-allowed' }}
       />
       {enabled && (
-        <p style={{ fontSize: 9, color: MC.textMuted, margin: '2px 0 0' }}>
+        <p style={{ fontSize: 10, color: MC.textMuted, margin: '2px 0 0' }}>
           Showing only pixels with {def.label} ≥ {threshold!.toFixed(2)} ({def.legendHigh.toLowerCase()}); below is transparent.
         </p>
       )}

@@ -130,7 +130,7 @@ export function AoiAnalysisHub({
                   {a.label}
                 </span>
                 <span style={{
-                  display: 'block', fontSize: 9, color: MC.textMuted, marginTop: 1,
+                  display: 'block', fontSize: 10, color: MC.textMuted, marginTop: 1,
                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>
                   {a.hint}

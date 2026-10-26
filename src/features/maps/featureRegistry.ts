@@ -124,6 +124,7 @@ registerFeatureType('annotation-rectangle', {
   icon: 'RectangleHorizontal',
   schema: [
     { name: 'label',      label: 'Label',     ui: 'text', readOnly: true },
+    { name: 'size',       label: 'Size',      ui: 'text', readOnly: true },
     { name: 'area',       label: 'Area',      ui: 'text', readOnly: true },
     { name: 'perimeter',  label: 'Perimeter', ui: 'text', readOnly: true },
     ...ANNOTATION_STYLE_SCHEMA,

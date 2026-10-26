@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback, forwardRef } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, forwardRef, memo } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Eye, EyeOff, ChevronDown, ChevronRight,
@@ -12,6 +12,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { shallow } from 'zustand/shallow';
 import { downloadJSON } from '@/lib/download-utils';
 import { useMapLayersStore } from '@/stores/mapLayersStore';
 import { datasetsApi } from '@/lib/api/datasets';
@@ -47,6 +48,8 @@ export interface LayerCardProps {
   mapId?: string;
   /** Called when user confirms deletion */
   onRemove?: () => void;
+  /** Called after the user confirms a permanent, irreversible delete (annotation sets only) */
+  onPurge?: () => void;
   /** Called to rename an annotation set */
   onRename?: (newName: string) => void;
   /**
@@ -59,10 +62,15 @@ export interface LayerCardProps {
   childCount?: number;
 }
 
+// Stable empty-array fallback so `itemsData?.items ?? EMPTY_ITEMS` doesn't
+// produce a new reference every render while the query is pending/empty —
+// that would otherwise defeat the useMemo below it depends on.
+const EMPTY_ITEMS: DatasetItem[] = [];
+
 // ── Component ────────────────────────────────────────────────────────────────
 
-export function LayerCard({
-  id, name, type, dataset, annotationSet, mapId, onRemove, onRename,
+function LayerCardImpl({
+  id, name, type, dataset, annotationSet, mapId, onRemove, onPurge, onRename,
   aoiExpanded, onToggleAoiExpand, childCount,
 }: LayerCardProps) {
   const queryClient = useQueryClient();
@@ -82,7 +90,6 @@ export function LayerCard({
   const focusLayer = useMapLayersStore((s) => s.focusLayer);
   const isSelected = useMapLayersStore((s) => s.selectedLayerId === id);
   const selectedLayerId = useMapLayersStore((s) => s.selectedLayerId);
-  const allLayers = useMapLayersStore((s) => s.layers);
 
   // Review workflow status (annotation sets only). Drives the status badge and
   // the "Mark as …" context-menu actions used by the status-lens grouping.
@@ -175,7 +182,20 @@ export function LayerCard({
     enabled: !!dataset && expanded,
   });
 
-  const items = itemsData?.items ?? [];
+  const items = itemsData?.items ?? EMPTY_ITEMS;
+
+  // Item-level layer lookups, scoped to just this card's items instead of
+  // subscribing to the whole store's `layers` record — a shallow-compared
+  // array only changes reference when one of THESE specific item layers
+  // changes, not on every edit to every other layer in the map.
+  const itemLayerIds = useMemo(
+    () => items.map((it) => getDatasetItemLayerId(it.stac_item_id)),
+    [items],
+  );
+  const itemLayers = useMapLayersStore(
+    (s) => itemLayerIds.map((lid) => s.layers[lid] ?? null),
+    shallow,
+  );
 
   // Track which items are shown on map.
   // - Regular dataset cards: an item is "shown" if its top-level item-* layer exists.
@@ -185,7 +205,7 @@ export function LayerCard({
     ? new Set(layer?.stacItemId ? [layer.stacItemId] : [])
     : new Set(
         items
-          .filter((it) => !!allLayers[getDatasetItemLayerId(it.stac_item_id)])
+          .filter((_, idx) => !!itemLayers[idx])
           .map((it) => it.stac_item_id),
       );
 
@@ -212,6 +232,15 @@ export function LayerCard({
       }
     } else {
       setConfirmDelete(true);
+    }
+  };
+
+  // Permanent delete — distinct confirmation from "remove from map" since it
+  // destroys the set and every annotation in it, not just the map mount.
+  const handlePurge = () => {
+    if (!onPurge) return;
+    if (window.confirm(`Permanently delete "${name}" and all its annotations? This cannot be undone.`)) {
+      onPurge();
     }
   };
 
@@ -484,9 +513,11 @@ export function LayerCard({
             e.stopPropagation();
             const newVis = !layer.visible;
             setLayerVisible(id, newVis);
-            // Cascade to child item layers
+            // Cascade to child item layers — read the store directly here
+            // instead of subscribing to it, since this only needs the
+            // current snapshot at click time, not a reactive re-render.
             if (dataset) {
-              Object.entries(allLayers).forEach(([lid, l]) => {
+              Object.entries(useMapLayersStore.getState().layers).forEach(([lid, l]) => {
                 if (l.parentDatasetId === dataset.id) setLayerVisible(lid, newVis);
               });
             }
@@ -648,10 +679,10 @@ export function LayerCard({
                   No items
                 </div>
               ) : (
-                items.map((item) => {
+                items.map((item, idx) => {
                   const isShown = shownItemIds.has(item.stac_item_id);
                   const itemLayerId = getDatasetItemLayerId(item.stac_item_id);
-                  const itemLayer = isShown ? allLayers[itemLayerId] : null;
+                  const itemLayer = isShown ? itemLayers[idx] : null;
                   const isBusy = !!itemActionIds[item.id];
                   return (
                     <ItemSubRow
@@ -753,12 +784,28 @@ export function LayerCard({
               />
             </>
           )}
+          {onPurge && (
+            <CtxMenuItem
+              icon={<Trash2 size={12} />}
+              label="Delete permanently"
+              danger
+              onClick={() => { handlePurge(); setCtxMenu(null); }}
+            />
+          )}
         </div>,
         document.body,
       )}
     </div>
   );
 }
+
+// React.memo alone only helps if the parent (LeftPanel) passes referentially
+// stable props — note for whoever revisits this: LeftPanel currently creates
+// onRemove/onRename/onToggleAoiExpand inline per render, which still forces a
+// re-render here on any LeftPanel state change until those are useCallback'd.
+// This still helps today: it stops a re-render purely from a *sibling*
+// LayerCard's local state changing (e.g. another card's own useState).
+export const LayerCard = memo(LayerCardImpl);
 
 // ── Item sub-row (individual STAC item with controls) ───────────────────────
 

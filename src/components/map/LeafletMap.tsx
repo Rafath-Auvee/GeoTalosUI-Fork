@@ -10,6 +10,7 @@ import { useMapStore, setMapInstance } from '@/stores/mapStore';
 import type { DrawTool } from '@/stores/mapStore';
 import { useMapLayersStore, wasFeatureJustClicked, markFeatureClick } from '@/stores/mapLayersStore';
 import { getMapManager } from '@/features/maps/MapManager';
+import { useInteractiveStore } from '@/features/maps/interactive/store';
 import { useMapSync } from '@/features/maps/hooks/useMapSync';
 import { annotationSetsApi } from '@/lib/api/annotation-sets';
 import { toast } from 'sonner';
@@ -33,10 +34,12 @@ L.Icon.Default.mergeOptions({
   shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
 });
 
+const CARTO_KEY = process.env.NEXT_PUBLIC_CARTO_BASEMAP_API_KEY ?? '';
+
 const BASEMAPS: Record<string, { url: string; attribution: string; maxNativeZoom: number }> = {
   // CartoDB Voyager — English-first labels, clean cartographic style
   osm: {
-    url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    url: `https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png?key=${CARTO_KEY}`,
     attribution:
       '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
       '© <a href="https://carto.com/attributions">CARTO</a>',
@@ -48,14 +51,14 @@ const BASEMAPS: Record<string, { url: string; attribution: string; maxNativeZoom
     maxNativeZoom: 19,
   },
   light: {
-    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    url: `https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=${CARTO_KEY}`,
     attribution:
       '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
       '© <a href="https://carto.com/attributions">CARTO</a>',
     maxNativeZoom: 19,
   },
   dark: {
-    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    url: `https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=${CARTO_KEY}`,
     attribution:
       '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors ' +
       '© <a href="https://carto.com/attributions">CARTO</a>',
@@ -339,6 +342,12 @@ export default function LeafletMap() {
         annotationSetsApi.addFeature(setId, {
           geometry: geom,
           class_id: classId,
+          // Stamps AOI provenance (aoi_id/aoi_name) when the geometry falls
+          // inside a tracked AOI on this map — without it, a box drawn
+          // straight into an already-open set can't be used by an
+          // AOI-restricted Train Head export (see AwakeForestProd
+          // annotation_service.create_annotation).
+          map_id: useMapStore.getState().mapId,
         }).then(() => {
           layersState.requestAnnotationSetRefresh(setId);
           toast.success('Annotation saved');
@@ -363,6 +372,23 @@ export default function LeafletMap() {
         layersState.setCapturedBboxPrompt(bbox);
         layer.remove();
         useMapStore.getState().setActiveDrawTool('rectangle');
+        return;
+      }
+
+      // ── Embedding-reference Mode: capture rectangle as the embedding-search
+      // reference box. Separate slot from bboxPromptDrawMode above so the two
+      // draw flows (SAM3 exemplar prompts vs. embedding reference) never steal
+      // each other's rectangle when both live in AoiInferencePanel. One-shot —
+      // the panel turns the tool back off after consuming it.
+      if (layersState.embedRefDrawMode && geom) {
+        const bounds = (layer as unknown as L.Polygon).getBounds();
+        const bbox: [number, number, number, number] = [
+          bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth(),
+        ];
+        layersState.setCapturedEmbedRefBbox(bbox);
+        layersState.setEmbedRefDrawMode(false);
+        layer.remove();
+        useMapStore.getState().setActiveDrawTool(null);
         return;
       }
 
@@ -469,6 +495,8 @@ export default function LeafletMap() {
       // Don't touch the panel while measuring — measurement click listener
       // handles those clicks independently and the panel must stay open.
       if (useMapLayersStore.getState().measurementActive) return;
+      // Interactive annotation mode owns map clicks (the SAM point picker).
+      if (useInteractiveStore.getState().active) return;
       // Don't reselect/close while a draw tool is armed (AOI, annotation, or
       // bbox-prompt). Mid-draw clicks place vertices; routing them to the layer
       // underneath would switch the right panel and reset its state (e.g. the
@@ -500,6 +528,25 @@ export default function LeafletMap() {
     map.on('pm:create', handlePmCreate);
     map.on('pm:remove', handlePmRemove);
     map.on('click', handleMapClick);
+
+    // ── Disarm continuous drawing when the user clicks somewhere else ──────
+    // Lets a re-armed draw tool (see NewAnnotationPanel's save onSuccess)
+    // stay active across consecutive shapes, but stop the moment the user
+    // moves on to another panel — left, top toolbar, library, or anything in
+    // the right panel other than the annotation controls that are actually
+    // driving this draw session. Clicks inside the map (including Geoman's
+    // own toolbar, which lives in the map container) and inside the right
+    // panel (data-panel="right" — the annotation panel itself while a class
+    // is selected) are deliberately excluded.
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (!mounted) return;
+      if (!useMapStore.getState().activeDrawTool) return;
+      const target = e.target as Node;
+      if (map.getContainer().contains(target)) return;
+      if ((target as HTMLElement).closest?.('[data-panel="right"]')) return;
+      useMapStore.getState().setActiveDrawTool(null);
+    };
+    document.addEventListener('mousedown', handleOutsideClick, true);
 
     // ── Live style update for the pending drawn annotation ──
     const unsubPending = useMapLayersStore.subscribe(
@@ -625,6 +672,7 @@ export default function LeafletMap() {
       map.off('pm:create', handlePmCreate);
       map.off('pm:remove', handlePmRemove);
       map.off('click', handleMapClick);
+      document.removeEventListener('mousedown', handleOutsideClick, true);
       ro.disconnect();
       unsubBasemap();
       unsubDrawTool();

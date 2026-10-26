@@ -33,10 +33,13 @@ export default function FootprintMiniMap({ spatialExtent }: FootprintMiniMapProp
       mapRef.current = map;
 
       // Muted dark basemap tile layer
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {
-        subdomains: 'abcd',
-        maxZoom: 19,
-      }).addTo(map);
+      L.tileLayer(
+        `https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png?key=${process.env.NEXT_PUBLIC_CARTO_BASEMAP_API_KEY ?? ''}`,
+        {
+          subdomains: 'abcd',
+          maxZoom: 19,
+        }
+      ).addTo(map);
 
       if (spatialExtent) {
         const layer = L.geoJSON(spatialExtent as GeoJSON.GeoJsonObject, {

@@ -20,6 +20,18 @@ let _tokenGetter: (() => Promise<string | null>) | null = null;
 let _tokenCache: { token: string; expiresAt: number } | null = null;
 let _tokenInflight: Promise<string | null> | null = null;
 const TOKEN_CACHE_MS = 30_000;
+/** Never hand out a token with less than this left: it can expire before the request is verified. */
+const TOKEN_MIN_LIFE_MS = 10_000;
+
+/** Expiry (ms epoch) from the JWT's own `exp` claim, or null if it can't be read. */
+function tokenExpiryMs(token: string): number | null {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return typeof payload.exp === 'number' ? payload.exp * 1000 : null;
+  } catch {
+    return null;
+  }
+}
 
 export function registerTokenGetter(fn: () => Promise<string | null>) {
   _tokenGetter = fn;
@@ -52,7 +64,11 @@ export async function getAuthToken(): Promise<string | null> {
     }
 
     if (token) {
-      _tokenCache = { token, expiresAt: Date.now() + TOKEN_CACHE_MS };
+      // Cache until 30 s from now or shortly before the token's own expiry, whichever is first.
+      // (A fixed 30 s could outlive a token Clerk had already half-spent, so requests went out expired.)
+      const exp = tokenExpiryMs(token);
+      const until = exp ? Math.min(Date.now() + TOKEN_CACHE_MS, exp - TOKEN_MIN_LIFE_MS) : Date.now() + TOKEN_CACHE_MS;
+      if (until > Date.now()) _tokenCache = { token, expiresAt: until };
     }
     _tokenInflight = null;
     return token;
@@ -78,16 +94,67 @@ export async function refreshAuthToken(): Promise<string | null> {
  * Automatically injects the Clerk session JWT as a Bearer token.
  * Register a token getter via registerTokenGetter() for reliable auth.
  */
+// Backend list endpoints paginate on `limit`/`offset` (see MAX_PAGE_SIZE=100),
+// but much of the frontend passes `page_size`. Since the backend never reads
+// `page_size`, those requests silently fell back to the default 20 rows. This
+// hook maps `page_size` → `limit` so existing callers get what they asked for.
+//   • Only fills `limit` when a caller hasn't set one explicitly — so an
+//     intentional `limit` (e.g. features `limit: 10000`) is left untouched.
+//   • Clamps to 100, the max these list endpoints accept, to avoid 422s from
+//     callers that request more (e.g. `page_size: 1000`).
+const PAGE_SIZE_CAP = 100;
+function normalizePagination(request: Request): Request | undefined {
+  const url = new URL(request.url);
+  const sp = url.searchParams;
+  if (!sp.has('page_size')) return undefined;
+
+  const pageSize = Number(sp.get('page_size'));
+  sp.delete('page_size');
+  if (!sp.has('limit') && Number.isFinite(pageSize) && pageSize > 0) {
+    sp.set('limit', String(Math.min(pageSize, PAGE_SIZE_CAP)));
+  }
+  return new Request(url, request);
+}
+
+/**
+ * fetch that survives an expired session token. A Clerk JWT lives 60 s and can
+ * be stale by the time a request is verified ("Signature has expired", 401). The
+ * request is cloned before sending; on a 401 we fetch a fresh token and replay the
+ * clone once, so a stale token never surfaces as a user-facing error. Cloning first
+ * keeps POST bodies replayable.
+ */
+const fetchWithAuthRetry: typeof fetch = async (input, init) => {
+  const req = input instanceof Request ? input : new Request(input, init);
+  const replay = req.clone();
+  const res = await fetch(req);
+  if (res.status !== 401 || replay.headers.get('x-auth-retried')) return res;
+  const fresh = await refreshAuthToken();
+  if (!fresh) return res;
+  replay.headers.set('Authorization', `Bearer ${fresh}`);
+  replay.headers.set('x-auth-retried', '1');
+  return fetch(replay);
+};
+
 export const apiClient = ky.create({
   prefixUrl: API_BASE,
+  fetch: fetchWithAuthRetry,
   timeout: 60_000, // 60 s — large dataset lists / tile registrations can be slow
   hooks: {
     beforeRequest: [
+      // A single hook: ky stops running beforeRequest hooks as soon as one
+      // returns a Request (see its core loop — `break` on `instanceof Request`),
+      // so normalizing pagination and attaching the auth header must happen
+      // in the same hook. Splitting them silently dropped the Authorization
+      // header on every request that carried `page_size` (i.e. every list
+      // call), since normalizePagination's returned Request short-circuited
+      // the loop before the auth hook ever ran.
       async (request) => {
+        const normalized = normalizePagination(request) ?? request;
         const token = await getAuthToken();
         if (token) {
-          request.headers.set('Authorization', `Bearer ${token}`);
+          normalized.headers.set('Authorization', `Bearer ${token}`);
         }
+        return normalized;
       },
     ],
   },

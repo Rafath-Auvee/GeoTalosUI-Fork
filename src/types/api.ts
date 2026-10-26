@@ -276,6 +276,8 @@ export interface AnnotationSet {
    *  Maintained by a DB trigger — used for AOI auto-nesting and fly-to. */
   extent_4326?: [number, number, number, number] | null;
   annotation_count?: number;
+  /** Filled by the org-level list so rows can show the schema without a lookup. */
+  schema_name?: string | null;
   schema?: AnnotationSchema | null;
   created_at: string;
   updated_at: string;
@@ -417,15 +419,21 @@ export interface AIModel {
   organization_id: string;
   name: string;
   description: string | null;
-  framework: string | null;       // "yolo", "sam3", "custom", etc.
+  framework: string | null;       // "yolo", "sam3", "dinov2", "custom", etc.
   version: string | null;
-  type: string | null;            // "detection" | "segmentation" | "classification"
+  type: string | null;            // "detection" | "segmentation" | "classification" | "embedding"
+                                   // | "backbone" | "detect_head" | "segment_head"
   endpoint_url: string | null;
   request_config: Record<string, unknown> | null;
   input_schema: Record<string, unknown> | null;
   output_schema: Record<string, unknown> | null;
   output_config: Record<string, unknown> | null;
   config: Record<string, unknown> | null;
+  /** S3 URI of a head-only checkpoint (detect_head/segment_head rows only —
+   *  overlaid onto backbone_model_id's backbone by geoops-service). */
+  artifact_uri: string | null;
+  /** For a head row: the shared "backbone" AIModel it overlays onto. */
+  backbone_model_id: string | null;
   annotation_schema_id: string | null;
   created_by: string | null;
   has_auth_config: boolean;

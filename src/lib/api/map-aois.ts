@@ -284,6 +284,8 @@ export const mapAoisApi = {
       patch_size_px?: number;
       stride_px?: number;
       max_patches_per_item?: number;
+      /** Restrict a multi-scale model to a subset of its trained scales (m). */
+      scales_m?: number[];
     },
   ): Promise<{ id: string; status: string; [k: string]: any }> {
     return apiClient

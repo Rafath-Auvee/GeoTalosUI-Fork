@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { ChevronDown } from 'lucide-react';
 import { MC } from '../../mapColors';
-import type { RenderingConfig, BandInfo, RenderingPreset } from '@/types/api';
+import type { RenderingConfig, RenderingPreset } from '@/types/api';
 import type { BandSelection } from '../../types';
+import { BandSelectRow } from './PanelControls';
 
 interface BandSelectorProps {
   renderingConfig: RenderingConfig;
@@ -12,16 +12,12 @@ interface BandSelectorProps {
   activePreset: string | null;
   onBandChange: (bands: BandSelection, preset?: string | null) => void;
   onPresetChange: (presetId: string) => void;
+  /** Lay the R/G/B pickers out in one row (used inside the AOI panel). */
+  compact?: boolean;
 }
 
 const CHANNEL_LABELS = ['R', 'G', 'B'] as const;
 const CHANNEL_COLORS = ['#e05c5c', '#5cb85c', '#5c8ce0'] as const;
-
-function bandLabel(band: BandInfo): string {
-  if (band.spectral_name) return `${band.index}: ${band.spectral_name}`;
-  if (band.description) return `${band.index}: ${band.description}`;
-  return `Band ${band.index}`;
-}
 
 export function BandSelector({
   renderingConfig,
@@ -29,6 +25,7 @@ export function BandSelector({
   activePreset,
   onBandChange,
   onPresetChange,
+  compact = false,
 }: BandSelectorProps) {
   const bands = renderingConfig.bands;
   // Drop expression-based presets (e.g. legacy "ndvi"/"moisture" baked into
@@ -67,7 +64,7 @@ export function BandSelector({
       {Object.keys(presets).length > 1 && (
         <div style={{ marginBottom: 8 }}>
           <div style={{
-            fontSize: 9, fontWeight: 600, color: MC.textMuted,
+            fontSize: 10, fontWeight: 600, color: MC.textMuted,
             textTransform: 'uppercase', letterSpacing: '0.03em',
             marginBottom: 4,
           }}>
@@ -89,80 +86,30 @@ export function BandSelector({
 
       {/* RGB channel selectors */}
       <div style={{
-        fontSize: 9, fontWeight: 600, color: MC.textMuted,
+        fontSize: 10, fontWeight: 600, color: MC.textMuted,
         textTransform: 'uppercase', letterSpacing: '0.03em',
         marginBottom: 4,
       }}>
         RGB Channels ({bands.length} bands)
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <div style={compact
+        ? { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }
+        : { display: 'flex', flexDirection: 'column', gap: 4 }}>
         {CHANNEL_LABELS.map((ch, i) => {
           const channel = ch.toLowerCase() as 'r' | 'g' | 'b';
           const selectedIndex = current[channel];
           return (
-            <ChannelRow
+            <BandSelectRow
               key={ch}
               label={ch}
               color={CHANNEL_COLORS[i]}
+              labelWidth={compact ? 10 : 16}
               bands={bands}
-              selectedIndex={selectedIndex}
+              value={selectedIndex}
               onChange={(idx) => handleChannelChange(channel, idx)}
             />
           );
         })}
-      </div>
-    </div>
-  );
-}
-
-function ChannelRow({
-  label, color, bands, selectedIndex, onChange,
-}: {
-  label: string;
-  color: string;
-  bands: BandInfo[];
-  selectedIndex: number;
-  onChange: (index: number) => void;
-}) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <span style={{
-        width: 16, fontSize: 11, fontWeight: 700,
-        color, textAlign: 'center', flexShrink: 0,
-      }}>
-        {label}
-      </span>
-      <div style={{ position: 'relative', flex: 1 }}>
-        <select
-          value={selectedIndex}
-          onChange={(e) => onChange(Number(e.target.value))}
-          onClick={(e) => e.stopPropagation()}
-          style={{
-            width: '100%', height: 26, fontSize: 11,
-            padding: '0 20px 0 8px',
-            borderRadius: 4,
-            border: `1px solid ${MC.border}`,
-            background: MC.inputBg,
-            color: MC.text,
-            cursor: 'pointer',
-            appearance: 'none',
-            outline: 'none',
-          }}
-        >
-          {bands.map((b) => (
-            <option key={b.index} value={b.index}>
-              {bandLabel(b)}
-            </option>
-          ))}
-        </select>
-        <ChevronDown
-          size={10}
-          style={{
-            position: 'absolute', right: 6, top: '50%',
-            transform: 'translateY(-50%)',
-            color: MC.textMuted, pointerEvents: 'none',
-          }}
-        />
       </div>
     </div>
   );

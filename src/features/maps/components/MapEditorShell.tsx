@@ -35,6 +35,10 @@ import type { ActiveTool } from './MapTopNav';
 import { MapStatusBar } from './MapStatusBar';
 import { LeftPanel } from './LeftPanel/LeftPanel';
 import { RightPanel } from './RightPanel/RightPanel';
+import { InteractiveMapLayer } from '../interactive/InteractiveMapLayer';
+import { InteractiveModeBanner } from '../interactive/InteractiveModeBanner';
+import { InteractiveGallery } from '../interactive/InteractiveGallery';
+import { useModeLock } from '../interactive/lock';
 import { LibraryPanel } from './LibraryPanel';
 import { ScaleBar } from '@/components/map/ScaleBar';
 import { TimelinePanel } from './TimelinePanel';
@@ -195,6 +199,15 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapId]);
 
+  // ── Publish mapId to mapStore — lets code with no prop access (e.g.
+  //    LeafletMap's Geoman pm:create handler) stamp AOI provenance on
+  //    annotations drawn straight into an already-open set. ──────────
+  const setMapId = useMapStore((s) => s.setMapId);
+  useEffect(() => {
+    setMapId(mapId);
+    return () => { setMapId(null); };
+  }, [mapId, setMapId]);
+
   // ── Restore view_state from map data ──────────────────────
   const viewStateRestoredRef = useRef(false);
 
@@ -248,12 +261,22 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
         if (bl.source_type === 'annotation_set' && bl.annotation_set_id) {
           const layerId = `annset-${bl.annotation_set_id}`;
 
+          // Always record the backend id, even if the local layer entry
+          // already exists — useMapContext's separate annotation-set-mount
+          // hydration effect (keyed off map_annotation_sets, not this
+          // mapData.layers list) may have already called initLayer for the
+          // same layerId with no backend id attached, and whichever effect
+          // runs first otherwise "wins" the race. Without this, the id
+          // never gets set, so the backend-sync effect below treats this
+          // layer as new on every reload and POSTs a duplicate map_layers
+          // row — the actual root cause of the map_layers duplication
+          // fixed server-side in migration 062 / MapLayerService.
+          setBackendLayerId(layerId, bl.id);
+
           // Skip if layer already exists in store (prevents re-adding deleted layers)
           if (currentLayers[layerId]) return;
           // Skip if user explicitly deleted this layer in the current session
           if (wasLayerLocallyRemoved(layerId)) return;
-
-          setBackendLayerId(layerId, bl.id);
           // Pre-populate classStyles from:
           // 1. Fetched annotation set details (if available) - has embedded schema
           // 2. The map mount row (keyed by annotation_set_id) - has schema_id only
@@ -986,6 +1009,28 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
     ]);
   }, [mapId, removeLayer, queryClient]);
 
+  // ── Permanently delete annotation set ──────────────────────
+  // Unlike handleRemoveAnnotationSet, this destroys the set and every
+  // annotation in it (backend cascades map/project mounts too). Admin-only;
+  // the backend 403s non-admins since there's no client-side role check yet.
+  const handlePurgeAnnotationSet = useCallback(async (setId: string) => {
+    const layerId = `annset-${setId}`;
+    try {
+      await annotationSetsApi.purge(setId);
+    } catch (err) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      toast.error(status === 403 ? 'Only org admins can delete annotation sets' : 'Failed to delete annotation set');
+      return;
+    }
+
+    removeLayer(layerId);
+    toast.success('Annotation set deleted permanently');
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: qk.annotationSets.listByMap(mapId) }),
+      queryClient.invalidateQueries({ queryKey: qk.maps.detail(mapId) }),
+    ]);
+  }, [mapId, removeLayer, queryClient]);
+
   // ── Remove AOI ────────────────────────────────────────────
   const handleRemoveAoi = useCallback(async (aoiLayerId: string) => {
     const backendId = useMapLayersStore.getState().backendLayerIds[aoiLayerId];
@@ -1483,6 +1528,7 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [basemapOpen, setBasemapOpen] = useState(false);
   const [editingName, setEditingName] = useState(false);
+  const navLock = useModeLock<HTMLDivElement>();
   const [mapName, setMapName] = useState('');
 
   useEffect(() => {
@@ -1595,6 +1641,7 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
     <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: '#1a1e17', zIndex: MAP_Z.root }}>
 
       {/* ── TopNav — fixed height, not overlapping the map ─── */}
+      <div ref={navLock.ref} style={{ flexShrink: 0, ...navLock.style }}>
       <MapTopNav
         workspaceId={workspaceId}
         projectId={projectId}
@@ -1619,6 +1666,7 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
         aoiDrawMode={aoiDrawMode}
         onAoiToolClick={handleAoiToolClick}
       />
+      </div>
 
       {/* ── Map area — fills remaining space between nav and status bar ── */}
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
@@ -1656,11 +1704,15 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
           annotationSets={annotationSets}
           onRemoveDataset={handleRemoveDataset}
           onRemoveAnnotationSet={handleRemoveAnnotationSet}
+          onPurgeAnnotationSet={handlePurgeAnnotationSet}
           onRemoveAoi={handleRemoveAoi}
           onRenameAnnotationSet={handleRenameAnnotationSet}
         />
 
         <RightPanel topOffset={0} bottomOffset={0} mapId={mapId} projectId={projectId} datasets={datasets} />
+        <InteractiveMapLayer />
+        <InteractiveModeBanner />
+        <InteractiveGallery />
 
         <LibraryPanel
           open={libraryOpen}

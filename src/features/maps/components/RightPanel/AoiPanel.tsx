@@ -2,20 +2,26 @@
 
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
-  BoxSelect, Check, Database, FileImage,
+  BoxSelect, Check, ChevronDown, ChevronRight, Database, ScanSearch,
 } from 'lucide-react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useMapLayersStore } from '@/stores/mapLayersStore';
 import { mapAoisApi, getOrStartAoiCreate } from '@/lib/api/map-aois';
 import { mapsApi } from '@/lib/api/maps';
+import { datasetsApi } from '@/lib/api/datasets';
 import { qk } from '@/lib/query-keys';
 import { MC } from '../../mapColors';
 import type { Dataset, DatasetItem } from '@/types/api';
 import { datasetItemLabel } from '@/features/datasets/itemLabel';
 import type { BandSelection } from '../../types';
 import { BandSelector } from './BandSelector';
+import { PanelSelect } from './PanelControls';
+import { useInteractiveStore } from '../../interactive/store';
 import { switchAoiChildLayerToItem } from '@/features/maps/utils/aoiChildItem';
+import { KindIcon, RowMenu, VectorSetCards, useCanDelete, usePurgeDataset, useVectorPick } from './AoiDataList';
+import { AoiDataPicker } from './AoiDataPicker';
+import { useOnMapInAoi } from '../../hooks/useOnMapInAoi';
 import { AoiInferencePanel } from './AoiInferencePanel';
 import { AoiVisualizationPanel } from './AoiVisualizationPanel';
 import { AoiAnalysisHub, type AoiAnalysisKey } from './AoiAnalysisHub';
@@ -34,7 +40,6 @@ interface AoiPanelProps {
 
 export function AoiPanel({ aoiLayerId, mapId }: AoiPanelProps) {
   const layer = useMapLayersStore((s) => s.layers[aoiLayerId]);
-  const layers = useMapLayersStore((s) => s.layers);
   const backendAoiId = useMapLayersStore((s) => s.backendLayerIds[aoiLayerId]);
   const aoiSelectedDatasetIds = useMapLayersStore((s) => s.aoiSelectedDatasetIds);
   const toggleAoiDataset = useMapLayersStore((s) => s.toggleAoiDataset);
@@ -51,10 +56,13 @@ export function AoiPanel({ aoiLayerId, mapId }: AoiPanelProps) {
   // ── Backend-driven intersecting resources (datasets, items, vectors, masks) ──
   // Source of truth: GET /maps/{id}/aoi/resources?bbox=… — replaces client-side
   // bbox intersect against `datasets` prop.
+  // Lazy: the intersect query is the slow one, so it only runs once the data picker is opened.
+  const [resourcesWanted, setResourcesWanted] = useState(false);
+  useEffect(() => { setResourcesWanted(false); }, [aoiLayerId]);
   const { data: aoiResources, isLoading: aoiResourcesLoading } = useQuery({
     queryKey: qk.maps.aoiResources(mapId ?? '', bboxStr),
     queryFn: () => mapsApi.listAoiResources(mapId!, bbox!),
-    enabled: !!mapId && !!bbox,
+    enabled: !!mapId && !!bbox && resourcesWanted,
     staleTime: 30_000,
   });
 
@@ -66,6 +74,22 @@ export function AoiPanel({ aoiLayerId, mapId }: AoiPanelProps) {
     }
     return [];
   }, [aoiResources?.datasets]);
+
+  const vectorSets = aoiResources?.vector_annotation_sets ?? [];
+  const canDelete = useCanDelete();
+  const vectorPick = useVectorPick(aoiLayerId);
+  const onMap = useOnMapInAoi(bbox as [number, number, number, number] | undefined);
+
+  // Selected datasets are fetched by id (cheap), so the cards and the restored overlays don't wait
+  // for the intersect query.
+  const missingIds = aoiSelectedDatasetIds.filter((id) => !intersecting.some((d) => d.id === id));
+  const fetchedSelected = useQueries({
+    queries: missingIds.map((id) => ({ queryKey: ['datasets', 'detail', id], queryFn: () => datasetsApi.get(id), staleTime: 60_000, retry: false })),
+  });
+  const knownDatasets: Dataset[] = useMemo(
+    () => [...intersecting, ...fetchedSelected.map((q) => q.data).filter((d): d is Dataset => !!d && d.status === 'ready')],
+    [intersecting, fetchedSelected],
+  );
 
   // ── Restore selection from backend on AOI open ──────────────────────────────
   const { data: backendSelection } = useQuery({
@@ -98,7 +122,7 @@ export function AoiPanel({ aoiLayerId, mapId }: AoiPanelProps) {
   useEffect(() => {
     if (!bbox) return;
     const state = useMapLayersStore.getState();
-    for (const ds of intersecting) {
+    for (const ds of knownDatasets) {
       if (!aoiSelectedDatasetIds.includes(ds.id)) continue;
       const childLayerId = `${aoiLayerId}-ds-${ds.id}`;
       if (state.layers[childLayerId]) continue;
@@ -108,7 +132,7 @@ export function AoiPanel({ aoiLayerId, mapId }: AoiPanelProps) {
         bbox,
       );
     }
-  }, [aoiLayerId, bbox, intersecting, aoiSelectedDatasetIds, addAoiBoundedDataset]);
+  }, [aoiLayerId, bbox, knownDatasets, aoiSelectedDatasetIds, addAoiBoundedDataset]);
 
   // ── Ensure AOI exists on the backend ────────────────────────────────────────
   // Centralises the POST /maps/{id}/aois call. The MapEditorShell subscribe
@@ -170,8 +194,8 @@ export function AoiPanel({ aoiLayerId, mapId }: AoiPanelProps) {
 
   // Datasets currently selected on this AOI, filtered to the intersecting set.
   const selectedDatasetObjs = useMemo(
-    () => intersecting.filter((d) => aoiSelectedDatasetIds.includes(d.id)),
-    [intersecting, aoiSelectedDatasetIds],
+    () => knownDatasets.filter((d) => aoiSelectedDatasetIds.includes(d.id)),
+    [knownDatasets, aoiSelectedDatasetIds],
   );
   const ensureAoi = useCallback(() => ensureAoiMut.mutateAsync(), [ensureAoiMut]);
 
@@ -189,7 +213,7 @@ export function AoiPanel({ aoiLayerId, mapId }: AoiPanelProps) {
       if (!bbox) return;
 
       if (isSelected) {
-        if (layers[childLayerId]) {
+        if (useMapLayersStore.getState().layers[childLayerId]) {
           removeAoiBoundedDataset(childLayerId);
         }
       } else {
@@ -230,113 +254,175 @@ export function AoiPanel({ aoiLayerId, mapId }: AoiPanelProps) {
       };
       void persistSelection();
     },
-    [aoiLayerId, aoiSelectedDatasetIds, bbox, layers, toggleAoiDataset, addAoiBoundedDataset, removeAoiBoundedDataset, mapId, backendAoiId, queryClient, ensureAoiMut]
+    [aoiLayerId, aoiSelectedDatasetIds, bbox, toggleAoiDataset, addAoiBoundedDataset, removeAoiBoundedDataset, mapId, backendAoiId, queryClient, ensureAoiMut]
   );
+
+  // Cards: what is selected on this AOI plus whatever is already on the map and overlaps it.
+  const cardDatasets = useMemo(() => {
+    const seen = new Set(selectedDatasetObjs.map((d) => d.id));
+    return [...selectedDatasetObjs, ...onMap.rasters.filter((d) => !seen.has(d.id))];
+  }, [selectedDatasetObjs, onMap.rasters]);
+  const onMapVectorIds = useMemo(() => onMap.vectors.map((v) => v.id), [onMap.vectors]);
+  const cardCount = cardDatasets.length + new Set([...vectorPick.picked, ...onMapVectorIds]).size;
+
+  const purge = usePurgeDataset((datasetId) => {
+    const ds = knownDatasets.find((d) => d.id === datasetId);
+    if (ds && aoiSelectedDatasetIds.includes(datasetId)) handleToggleDataset(ds);
+  });
 
   if (!layer) return null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
-      <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 12 }}>
 
-        {/* ── AOI Info ─────────────────────────────────────────── */}
-        <section>
-          <SectionHeader icon={<BoxSelect size={11} />} label="Bounding Box" />
-          {bbox && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 12px', padding: '6px 0' }}>
-              {(['W', 'S', 'E', 'N'] as const).map((dir, i) => (
-                <div key={dir} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <span style={{ fontSize: 9, fontWeight: 700, color: MC.textMuted, width: 12 }}>{dir}</span>
-                  <span style={{ fontSize: 11, color: MC.text, fontVariantNumeric: 'tabular-nums' }}>
-                    {bbox[i].toFixed(5)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+        {/* ── Interactive annotation — separate mode, local draft until commit ── */}
+        {bbox && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <button
+              type="button"
+              disabled={!hasSelected}
+              onClick={() =>
+                {
+                  // Datasets selected on this AOI; the mode resolves which item to read.
+                  useInteractiveStore.getState().enter({
+                    mapId,
+                    aoiLayerId,
+                    aoiName: layer.name,
+                    bbox,
+                    geometry,
+                    datasets: selectedDatasetObjs.map((d) => ({ id: d.id, name: d.name })),
+                  });
+                }
+              }
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, height: 32, borderRadius: 5,
+                fontSize: 11, fontWeight: 700,
+                border: `1.5px solid ${hasSelected ? MC.accent : MC.border}`,
+                background: hasSelected ? MC.accentDim : 'transparent',
+                color: hasSelected ? MC.text : MC.textMuted,
+                cursor: hasSelected ? 'pointer' : 'not-allowed',
+              }}
+            >
+              <ScanSearch size={13} color={hasSelected ? MC.accent : MC.textMuted} />
+              Interactive annotation
+            </button>
+            <span style={{ fontSize: 10, color: MC.textMuted, lineHeight: 1.4 }}>
+              {hasSelected
+                ? 'Find every object in this AOI, group and label them, then save. Nothing is saved until you commit.'
+                : 'Select a dataset below to start.'}
+            </span>
+          </div>
+        )}
 
-        {/* ── Intersecting Datasets ────────────────────────────── */}
+        {/* ── Bounding box — read-only, one line ─────────────────── */}
+        {bbox && (
+          <div
+            title="Bounding box (W, S, E, N)"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              fontSize: 10, color: MC.textMuted, fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            <span style={{ color: MC.accent, display: 'flex' }}><BoxSelect size={11} /></span>
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {bbox.map((v) => v.toFixed(4)).join(', ')}
+            </span>
+          </div>
+        )}
+
+        {/* ── Data: dataset checklist with item + band controls inline ─ */}
         <section>
-          <SectionHeader icon={<Database size={11} />} label={`Datasets (${intersecting.length})`} />
-          {aoiResourcesLoading && intersecting.length === 0 ? (
+          <SectionHeader icon={<Database size={11} />} label={`Data (${cardCount})`} />
+          <AoiDataPicker
+            rasters={intersecting}
+            vectors={vectorSets}
+            selectedRasterIds={aoiSelectedDatasetIds}
+            pickedVectorIds={vectorPick.picked}
+            loading={resourcesWanted && aoiResourcesLoading}
+            onOpen={() => setResourcesWanted(true)}
+            onToggleRaster={handleToggleDataset}
+            onToggleVector={(s) => void vectorPick.toggle(s)}
+          />
+          {cardCount === 0 ? (
             <p style={{ fontSize: 11, color: MC.textMuted, fontStyle: 'italic', padding: '6px 0' }}>
-              Loading intersecting resources…
-            </p>
-          ) : intersecting.length === 0 ? (
-            <p style={{ fontSize: 11, color: MC.textMuted, fontStyle: 'italic', padding: '6px 0' }}>
-              No ready datasets intersect this AOI
+              Nothing on the map overlaps this AOI yet. Add a raster to analyse it, or an annotation set to clean it.
             </p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '4px 0' }}>
-              {intersecting.map((ds) => {
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 0' }}>
+              {cardDatasets.map((ds) => {
                 const checked = aoiSelectedDatasetIds.includes(ds.id);
                 const fileCount = ds.metadata?.file_count ?? 0;
                 const temporal = ds.temporal_extent;
                 return (
-                  <button
+                  <div
                     key={ds.id}
-                    onClick={() => handleToggleDataset(ds)}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      padding: '6px 8px', borderRadius: 5,
+                      borderRadius: 5,
                       background: checked ? MC.accentDim : 'transparent',
                       border: `1px solid ${checked ? MC.accent : MC.border}`,
-                      cursor: 'pointer', textAlign: 'left',
                       transition: 'all 0.12s',
                     }}
                   >
-                    <div style={{
-                      width: 16, height: 16, borderRadius: 3,
-                      border: `1.5px solid ${checked ? MC.accent : MC.borderLight}`,
-                      background: checked ? MC.accent : 'transparent',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      flexShrink: 0, transition: 'all 0.12s',
-                    }}>
-                      {checked && <Check size={10} color="#fff" strokeWidth={3} />}
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <button
+                      role="checkbox"
+                      aria-checked={checked}
+                      onClick={() => handleToggleDataset(ds)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0,
+                        padding: '6px 4px 6px 8px', background: 'transparent', border: 'none',
+                        cursor: 'pointer', textAlign: 'left',
+                      }}
+                    >
                       <div style={{
-                        fontSize: 11, fontWeight: 600, color: MC.text,
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        width: 16, height: 16, borderRadius: 3,
+                        border: `1.5px solid ${checked ? MC.accent : MC.borderLight}`,
+                        background: checked ? MC.accent : 'transparent',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        flexShrink: 0, transition: 'all 0.12s',
                       }}>
-                        {ds.name}
+                        {checked && <Check size={10} color="#fff" strokeWidth={3} />}
                       </div>
-                      <div style={{ fontSize: 9, color: MC.textMuted, display: 'flex', gap: 8, marginTop: 1 }}>
-                        {fileCount > 0 && <span>{fileCount} item{fileCount !== 1 ? 's' : ''}</span>}
-                        {temporal && (
-                          <span>
-                            {fmtShortDate(temporal.lower)} — {fmtShortDate(temporal.upper)}
-                          </span>
-                        )}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{
+                          fontSize: 11, fontWeight: 600, color: MC.text,
+                          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          display: 'flex', alignItems: 'center', gap: 6,
+                        }}>
+                          <KindIcon kind="raster" />
+                          <span title={ds.name} style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{ds.name}</span>
+                        </div>
+                        <div style={{ fontSize: 10, color: MC.textMuted, display: 'flex', gap: 8, marginTop: 1 }}>
+                          {fileCount > 0 && <span>{fileCount} item{fileCount !== 1 ? 's' : ''}</span>}
+                          {temporal && (
+                            <span>
+                              {fmtShortDate(temporal.lower)} — {fmtShortDate(temporal.upper)}
+                            </span>
+                          )}
+                        </div>
                       </div>
+                    </button>
+                    <div style={{ padding: '0 4px 0 0' }}>
+                      <RowMenu name={ds.name} canDelete={canDelete} onDelete={() => purge.request({ id: ds.id, name: ds.name, items: fileCount })} />
                     </div>
-                  </button>
+                    </div>
+                    {bbox && checked && (
+                      <AoiDatasetItemControl
+                        aoiLayerId={aoiLayerId}
+                        dataset={ds}
+                        bbox={bbox}
+                        mapId={mapId}
+                      />
+                    )}
+                  </div>
                 );
               })}
+              <VectorSetCards aoiLayerId={aoiLayerId} onMapIds={onMapVectorIds} />
             </div>
           )}
+          {purge.dialog}
         </section>
-
-        {/* ── Selected Dataset Items + Per-item Band Selection ───────────── */}
-        {bbox && hasSelected && (
-          <section>
-            <SectionHeader icon={<FileImage size={11} />} label="Selected Dataset Items" />
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 4 }}>
-              {intersecting
-                .filter((ds) => aoiSelectedDatasetIds.includes(ds.id))
-                .map((ds) => (
-                  <AoiDatasetItemControl
-                    key={ds.id}
-                    aoiLayerId={aoiLayerId}
-                    dataset={ds}
-                    bbox={bbox}
-                    mapId={mapId}
-                  />
-                ))}
-            </div>
-          </section>
-        )}
 
         {/* ── Analyses: hub or selected detail ────────────────── */}
         {view === 'hub' && (
@@ -446,33 +532,6 @@ function SectionHeader({ icon, label }: { icon: React.ReactNode; label: string }
   );
 }
 
-function _AnalysisBtn({
-  icon, label, disabled, loading, onClick,
-}: {
-  icon: React.ReactNode; label: string; disabled: boolean; loading: boolean; onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled || loading}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '7px 10px', borderRadius: 5,
-        background: 'transparent',
-        border: `1px solid ${disabled ? MC.border : MC.accent}`,
-        color: disabled ? MC.textMuted : MC.text,
-        fontSize: 11, fontWeight: 500,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        opacity: loading ? 0.6 : 1,
-        transition: 'all 0.12s',
-      }}
-    >
-      <span style={{ color: disabled ? MC.textMuted : MC.accent, display: 'flex' }}>{icon}</span>
-      {loading ? 'Running...' : label}
-    </button>
-  );
-}
-
 function AoiDatasetItemControl({
   aoiLayerId,
   dataset,
@@ -555,29 +614,22 @@ function AoiDatasetItemControl({
     }
   }, [childLayerId, dataset.id, selectedStacItemId, setLayerBandSelection]);
 
-  return (
-    <div style={{ border: `1px solid ${MC.border}`, borderRadius: 6, padding: 8, background: MC.inputBg }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: MC.text, marginBottom: 6 }}>
-        {dataset.name}
-      </div>
+  const [bandsOpen, setBandsOpen] = useState(false);
+  const hasBands = !!childLayer?.renderingConfig && childLayer.renderingConfig.bands.length > 1;
+  const rc = childLayer?.renderingConfig;
+  const activePresetLabel = childLayer?.activePreset
+    ? rc?.presets[childLayer.activePreset]?.label
+    : childLayer?.bandSelection
+      ? 'custom RGB'
+      : rc?.presets[rc.default_preset]?.label;
 
-      <div style={{ fontSize: 9, color: MC.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 3 }}>
-        Active Item
-      </div>
-      <select
+  return (
+    <div style={{ padding: '0 8px 8px 32px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <PanelSelect
+        aria-label={`Active item for ${dataset.name}`}
         value={selectedStacItemId}
         disabled={isLoading || items.length === 0}
         onChange={(e) => { void handleItemSelect(e.target.value); }}
-        style={{
-          width: '100%',
-          height: 26,
-          fontSize: 11,
-          borderRadius: 4,
-          border: `1px solid ${MC.border}`,
-          background: MC.panelBg,
-          color: MC.text,
-          marginBottom: 8,
-        }}
       >
         {isLoading && <option value="">Loading items…</option>}
         {!isLoading && items.length === 0 && <option value="">No AOI items found</option>}
@@ -586,16 +638,46 @@ function AoiDatasetItemControl({
             {datasetItemLabel(item)}
           </option>
         ))}
-      </select>
+      </PanelSelect>
 
-      {childLayer?.renderingConfig && childLayer.renderingConfig.bands.length > 1 && (
-        <BandSelector
-          renderingConfig={childLayer.renderingConfig}
-          bandSelection={childLayer.bandSelection ?? null}
-          activePreset={childLayer.activePreset ?? null}
-          onBandChange={handleBandChange}
-          onPresetChange={handlePresetChange}
-        />
+      {hasBands && childLayer?.renderingConfig && (
+        <div>
+          <button
+            type="button"
+            onClick={() => setBandsOpen(!bandsOpen)}
+            aria-expanded={bandsOpen}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4, width: '100%',
+              background: 'transparent', border: 'none', cursor: 'pointer',
+              padding: '2px 0', color: MC.textSecondary,
+            }}
+          >
+            {bandsOpen
+              ? <ChevronDown size={11} color={MC.textMuted} />
+              : <ChevronRight size={11} color={MC.textMuted} />}
+            <span style={{
+              fontSize: 10, fontWeight: 700, letterSpacing: '0.06em',
+              textTransform: 'uppercase', color: MC.textMuted,
+            }}>
+              Bands
+              <span style={{ color: MC.accent, fontWeight: 600 }}>
+                {' · '}{activePresetLabel ?? 'default'}
+              </span>
+            </span>
+          </button>
+          {bandsOpen && (
+            <div style={{ paddingTop: 4 }}>
+              <BandSelector
+                compact
+                renderingConfig={childLayer.renderingConfig}
+                bandSelection={childLayer.bandSelection ?? null}
+                activePreset={childLayer.activePreset ?? null}
+                onBandChange={handleBandChange}
+                onPresetChange={handlePresetChange}
+              />
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

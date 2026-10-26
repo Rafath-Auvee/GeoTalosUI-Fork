@@ -2,12 +2,10 @@
 
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useQuery } from '@tanstack/react-query';
 import { X, Search, Database, Link, Upload, CheckCircle, Clock, AlertCircle, Loader, ArrowRight, Globe, Plus, Tags } from 'lucide-react';
 import { toast } from 'sonner';
-import type { Dataset, AnnotationSet, AnnotationClass } from '@/types/api';
+import type { Dataset, AnnotationClass } from '@/types/api';
 import { datasetsApi } from '@/lib/api/datasets';
-import { annotationSetsApi } from '@/lib/api/annotation-sets';
 import { annotationSchemasApi } from '@/lib/api/annotation-schemas';
 import { flyToAnnotationSet } from '../utils/annotationSetMap';
 import { buildClassStyles } from '../utils/annotationStyles';
@@ -16,6 +14,10 @@ import { useMapLayersStore } from '@/stores/mapLayersStore';
 import { useUploadStore } from '@/stores/uploadStore';
 import { UploadWizard } from '@/features/datasets/components/UploadWizard';
 import { MC, MAP_Z } from '../mapColors';
+import { LibraryAnnotationSets } from './LibraryAnnotationSets';
+import { SortSelect } from './SortSelect';
+import { Pager, usePaged } from './Pager';
+import { ago, fullDate, sortItems, type SortKey } from '../utils/sortData';
 import { getMapInstance } from '@/stores/mapStore';
 
 type LibTab = 'datasets' | 'annotations' | 'sources' | 'upload';
@@ -58,11 +60,14 @@ export function LibraryPanel({
   const activeUpload = useUploadStore((s) => s.upload);
   const queryClient = useQueryClient();
 
-  const filtered = datasets.filter((d) => {
+  const [sort, setSort] = useState<SortKey>('modified');
+  const filtered = sortItems(datasets, sort).filter((d) => {
     if (query && !d.name.toLowerCase().includes(query.toLowerCase())) return false;
     if (readyOnly && d.status !== 'ready') return false;
     return true;
   });
+
+  const pagedDs = usePaged(filtered, 25, `${query}|${readyOnly}|${sort}`);
 
   const addToMap = async (d: Dataset) => {
     if (!mapId) {
@@ -355,11 +360,11 @@ export function LibraryPanel({
                   }}
                 />
               </div>
-              {/* Ready-only filter toggle */}
+              {/* Ready-only filter toggle + sort */}
+              <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
               <button
                 onClick={() => setReadyOnly((v) => !v)}
                 style={{
-                  marginTop: 8,
                   display: 'flex',
                   alignItems: 'center',
                   gap: 6,
@@ -376,6 +381,8 @@ export function LibraryPanel({
                 <CheckCircle size={10} />
                 Ready only
               </button>
+              <SortSelect value={sort} onChange={setSort} height={26} />
+              </div>
             </div>
 
             {/* List */}
@@ -391,7 +398,7 @@ export function LibraryPanel({
                   {query ? `No datasets matching "${query}"` : 'No datasets yet — upload one to get started.'}
                 </div>
               ) : (
-                filtered.map((d) => (
+                pagedDs.pageItems.map((d) => (
                   <div
                     key={d.id}
                     style={{
@@ -421,6 +428,7 @@ export function LibraryPanel({
                       </div>
                       <div style={{ fontSize: 11, color: MC.textMuted }}>
                         {(d.metadata?.file_count ?? 0) > 0 && `${d.metadata!.file_count!.toLocaleString()} files · `}{d.dataset_type} · {d.status}
+                        <span title={`Modified ${fullDate(d.updated_at)}\nCreated ${fullDate(d.created_at)}`}> · {ago(sort === 'created' ? d.created_at : d.updated_at)}</span>
                       </div>
                     </div>
 
@@ -455,12 +463,13 @@ export function LibraryPanel({
                 ))
               )}
             </div>
+            <Pager page={pagedDs.page} pages={pagedDs.pages} total={pagedDs.total} pageSize={pagedDs.pageSize} onPage={pagedDs.setPage} />
           </>
         )}
 
         {/* ── Annotations tab — add annotation sets as vector layers ─ */}
         {tab === 'annotations' && (
-          <AnnotationSetsTab
+          <LibraryAnnotationSets
             onAdd={async (s) => {
               // First try embedded schema, then try the query cache
               let schemaClasses =
@@ -508,109 +517,6 @@ export function LibraryPanel({
               onAddToMap={handleAddToMap}
             />
           </div>
-        )}
-      </div>
-    </>
-  );
-}
-
-// ── Annotation Sets Tab — list org sets, add as Martin MVT vector layers ─────
-function AnnotationSetsTab({
-  onAdd,
-  isOnMap,
-}: {
-  onAdd: (s: AnnotationSet) => void;
-  isOnMap: (setId: string) => boolean;
-}) {
-  const [query, setQuery] = useState('');
-  const setsQ = useQuery({
-    queryKey: ['annotation-sets', 'org', 'library'],
-    queryFn: () => annotationSetsApi.listByOrg(),
-  });
-  const items = (setsQ.data?.items ?? []).filter(
-    (s) => !query || s.name.toLowerCase().includes(query.toLowerCase()),
-  );
-
-  return (
-    <>
-      <div style={{ padding: '10px 12px', borderBottom: `1px solid ${MC.border}`, flexShrink: 0 }}>
-        <div
-          style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            background: MC.inputBg, borderRadius: 6, padding: '6px 10px',
-            border: `1px solid ${MC.inputBorder}`,
-          }}
-        >
-          <Search size={12} style={{ color: MC.textMuted, flexShrink: 0 }} />
-          <input
-            type="text"
-            placeholder="Search annotation sets…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            style={{
-              flex: 1, background: 'transparent', border: 'none', outline: 'none',
-              color: MC.text, fontSize: 13,
-            }}
-          />
-        </div>
-      </div>
-      <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-        {setsQ.isLoading ? (
-          <div style={{ padding: 24, textAlign: 'center', fontSize: 12, color: MC.textMuted }}>
-            Loading…
-          </div>
-        ) : items.length === 0 ? (
-          <div style={{ padding: '32px 20px', fontSize: 13, color: MC.textMuted, textAlign: 'center', fontStyle: 'italic' }}>
-            {query ? `No sets matching "${query}"` : 'No annotation sets yet.'}
-          </div>
-        ) : (
-          items.map((s) => {
-            const onMap = isOnMap(s.id);
-            return (
-              <div
-                key={s.id}
-                style={{
-                  padding: '11px 14px',
-                  borderBottom: `1px solid ${MC.border}`,
-                  display: 'flex', gap: 10, alignItems: 'flex-start',
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                    <Tags size={12} style={{ color: MC.accent, flexShrink: 0 }} />
-                    <span
-                      style={{
-                        fontSize: 13, fontWeight: 600, color: MC.text,
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      }}
-                      title={s.name}
-                    >
-                      {s.name}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 11, color: MC.textMuted }}>
-                    {s.schema?.name ?? 'no schema'}
-                    {typeof s.annotation_count === 'number' && ` · ${s.annotation_count} features`}
-                    {s.stac_item_id && ' · attached to item'}
-                  </div>
-                </div>
-                <button
-                  onClick={() => !onMap && onAdd(s)}
-                  disabled={onMap}
-                  style={{
-                    flexShrink: 0, height: 28, padding: '0 10px', borderRadius: 5,
-                    border: `1px solid ${onMap ? MC.borderLight : MC.accent}`,
-                    background: onMap ? 'transparent' : MC.accentDim,
-                    color: onMap ? MC.textMuted : MC.accent,
-                    cursor: onMap ? 'default' : 'pointer',
-                    fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
-                  }}
-                >
-                  {onMap ? 'On map' : 'Add'}
-                </button>
-              </div>
-            );
-          })
         )}
       </div>
     </>

@@ -131,8 +131,11 @@ export function computeGeometryStats(
     if (shapeType === 'rectangle' && ring.length >= 4) {
       const h = haversineM([ring[0][1], ring[0][0]], [ring[1][1], ring[1][0]]);
       const w = haversineM([ring[1][1], ring[1][0]], [ring[2][1], ring[2][0]]);
-      stats.push({ label: 'N–S span', value: fmtLen(Math.min(h, w)) });
-      stats.push({ label: 'E–W span', value: fmtLen(Math.max(h, w)) });
+      const shortSide = Math.min(h, w);
+      const longSide = Math.max(h, w);
+      stats.unshift({ label: 'Size', value: `${fmtLen(longSide)} x ${fmtLen(shortSide)}` });
+      stats.push({ label: 'N–S span', value: fmtLen(shortSide) });
+      stats.push({ label: 'E–W span', value: fmtLen(longSide) });
     }
     return stats;
   }

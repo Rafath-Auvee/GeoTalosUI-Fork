@@ -7,6 +7,8 @@ import { useMapLayersStore } from '@/stores/mapLayersStore';
 import { useMapStore } from '@/stores/mapStore';
 import { annotationSetsApi } from '@/lib/api/annotation-sets';
 import { annotationSchemasApi } from '@/lib/api/annotation-schemas';
+import { datasetsApi } from '@/lib/api/datasets';
+import type { GeoJSONGeometry } from '@/types/geo';
 import { qk } from '@/lib/query-keys';
 import { MC } from '../../mapColors';
 import { AnnotationGeometryPreview } from './_annotation/AnnotationGeometryPreview';
@@ -109,6 +111,30 @@ function flattenTree(nodes: ClassTreeNode[]): ClassTreeNode[] {
   return result;
 }
 
+/** Recursively walk a GeoJSON geometry's coordinate tree and return its
+ *  [minLng, minLat, maxLng, maxLat] bbox. Used to resolve which dataset_item
+ *  a freshly-drawn annotation belongs to (see doAutoSave). */
+function geometryBbox(geometry: GeoJSONGeometry): [number, number, number, number] {
+  let minLng = Infinity;
+  let minLat = Infinity;
+  let maxLng = -Infinity;
+  let maxLat = -Infinity;
+  const walk = (coords: unknown): void => {
+    if (!Array.isArray(coords)) return;
+    if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+      const [lng, lat] = coords as [number, number];
+      if (lng < minLng) minLng = lng;
+      if (lng > maxLng) maxLng = lng;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+      return;
+    }
+    coords.forEach(walk);
+  };
+  walk((geometry as { coordinates: unknown }).coordinates);
+  return [minLng, minLat, maxLng, maxLat];
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 interface NewAnnotationPanelProps {
@@ -125,6 +151,13 @@ export function NewAnnotationPanel({ mapId }: NewAnnotationPanelProps) {
   const updateAttr   = useMapLayersStore((s) => s.updatePendingAnnotationAttribute);
   const removeAttr   = useMapLayersStore((s) => s.removePendingAnnotationAttribute);
   const clearPending = useMapLayersStore((s) => s.clearPendingAnnotation);
+  const selectedLayerId = useMapLayersStore((s) => s.selectedLayerId);
+  const layers       = useMapLayersStore((s) => s.layers);
+  // The dataset backing whatever layer is currently selected, if any — used
+  // to resolve which dataset_item a freshly-drawn box belongs to (see
+  // doAutoSave). No selected layer just means the annotation is saved
+  // without a linked image, same as today.
+  const activeDatasetId = selectedLayerId ? layers[selectedLayerId]?.sourceDatasetId : undefined;
 
   const drawnShapeType    = useMapStore((s) => s.drawnShapeType);
   const drawnGeometry     = useMapStore((s) => s.drawnGeometry);
@@ -208,15 +241,31 @@ export function NewAnnotationPanel({ mapId }: NewAnnotationPanelProps) {
     setSaved(false);
   }, [selectedSchemaId]);
 
+  // BUG FIX: without this, drawing a second shape (same schema+class as the
+  // first) never saved. `saved` and `attemptedRef` only ever got reset on a
+  // schema change — for consecutive draws of the same class they stayed
+  // "already saved"/"already attempted" forever, so doAutoSave's guards
+  // silently no-op'd on every shape after the first. setDrawnGeometry fires
+  // with a new object on every Geoman pm:create, so this correctly fires
+  // once per drawn shape, including the very first (harmless no-op there).
+  useEffect(() => {
+    setSaved(false);
+    attemptedRef.current = null;
+  }, [drawnGeometry]);
+
   // ── Save mutation: auto-set (map-level) ───────────────────────────────────
   const saveToMapMutation = useMutation({
-    mutationFn: (params: { mapId: string; classId: string; geometry: unknown; properties: Record<string, unknown> | null; schemaId: string; setName?: string }) =>
+    mutationFn: (params: {
+      mapId: string; classId: string; geometry: unknown; properties: Record<string, unknown> | null;
+      schemaId: string; setName?: string; datasetItemId?: string | null;
+    }) =>
       annotationSetsApi.addFeatureOnMap(params.mapId, {
         class_id: params.classId,
         geometry: params.geometry as Parameters<typeof annotationSetsApi.addFeatureOnMap>[1]['geometry'],
         properties: params.properties,
         schema_id: params.schemaId,
         set_name: params.setName ?? undefined,
+        dataset_item_id: params.datasetItemId ?? undefined,
       }),
     onSuccess: (result, vars) => {
       queryClient.invalidateQueries({ queryKey: qk.annotationSets.features(result.annotation_set_id) });
@@ -226,6 +275,17 @@ export function NewAnnotationPanel({ mapId }: NewAnnotationPanelProps) {
       useMapLayersStore.getState().requestAnnotationSetRefresh(result.annotation_set_id);
       setSaved(true);
       toast.success('Annotation saved');
+
+      // Re-arm the same draw tool so the user can draw the next box of the
+      // same class immediately, without reselecting the tool or the class —
+      // LeafletMap's pm:create handler disarms to null right after placing
+      // each shape (before this save even starts), so this is a genuine
+      // null -> tool transition and reliably re-triggers Geoman's enableDraw
+      // (see LeafletMap.tsx's "Reactive draw tool" subscribe). Stays armed
+      // until the user clicks outside the map/annotation panel (see
+      // LeafletMap's outside-click handler) or explicitly stops drawing.
+      const shapeType = useMapStore.getState().drawnShapeType;
+      if (shapeType) useMapStore.getState().setActiveDrawTool(shapeType);
     },
     onError: () => {
       toast.error('Failed to save annotation');
@@ -236,13 +296,13 @@ export function NewAnnotationPanel({ mapId }: NewAnnotationPanelProps) {
   const isSaving = saveToMapMutation.isPending;
 
   // ── Auto-save when class is selected and geometry exists ──────────────────
-  const doAutoSave = useCallback(() => {
+  const doAutoSave = useCallback(async () => {
     if (!drawnGeometry || !selectedClassId || !selectedSchemaId || !mapId || savingRef.current || saved) return;
 
-    // Only attempt once per (schema, class) selection. Without this, a failed
-    // request (which resets savingRef in onError) would re-fire every render
-    // because doAutoSave's identity changes with the mutation object.
-    const attemptKey = `${selectedSchemaId}:${selectedClassId}`;
+    // Only attempt once per (schema, class, geometry) — see the drawnGeometry
+    // reset effect above for why geometry must be part of this key: without
+    // it, redrawing with the same class attempted only once ever.
+    const attemptKey = `${selectedSchemaId}:${selectedClassId}:${JSON.stringify(drawnGeometry)}`;
     if (attemptedRef.current === attemptKey) return;
     attemptedRef.current = attemptKey;
 
@@ -265,11 +325,34 @@ export function NewAnnotationPanel({ mapId }: NewAnnotationPanelProps) {
       saveRecentClass(selectedSchemaId, cls.id, cls.name, (cls.style?.definition?.fillColor as string) ?? '#ccc');
     }
 
+    // Resolve which dataset_item this box was drawn on, if there's an active
+    // dataset layer — without this, the annotation can't be attributed to a
+    // specific image once it's a member of a dataset-wide verified set (the
+    // exporter geoops.dino_service reads to build training crops from).
+    // Best-effort: if the lookup fails or nothing intersects, save anyway
+    // without it rather than block the user's annotation.
+    let datasetItemId: string | null = null;
+    if (activeDatasetId) {
+      try {
+        const bbox = geometryBbox(drawnGeometry as GeoJSONGeometry);
+        const itemsResp = await datasetsApi.listItems(activeDatasetId, {
+          bbox: bbox.join(','),
+          page_size: 1,
+        });
+        datasetItemId = itemsResp.items[0]?.id ?? null;
+      } catch (err) {
+        console.error('dataset_item_id lookup failed', err);
+      }
+    }
+
     saveToMapMutation.mutate(
-      { mapId, classId: selectedClassId, geometry: drawnGeometry, properties, schemaId: selectedSchemaId },
+      {
+        mapId, classId: selectedClassId, geometry: drawnGeometry, properties,
+        schemaId: selectedSchemaId, datasetItemId,
+      },
       { onSettled: () => { savingRef.current = false; } },
     );
-  }, [drawnGeometry, selectedClassId, selectedSchemaId, saved, pending, mapId, saveToMapMutation, classes, saveRecentClass]);
+  }, [drawnGeometry, selectedClassId, selectedSchemaId, saved, pending, mapId, saveToMapMutation, classes, saveRecentClass, activeDatasetId]);
 
   // Trigger auto-save when class is picked
   useEffect(() => {

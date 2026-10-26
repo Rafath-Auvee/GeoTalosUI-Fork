@@ -40,6 +40,11 @@ const TYPE_COLORS: Record<string, { bg: string; text: string; label: string }> =
   detection:     { bg: 'rgba(14,165,233,0.1)',  text: '#0369a1', label: 'Detection' },
   segmentation:  { bg: 'rgba(168,85,247,0.1)',  text: '#7e22ce', label: 'Segmentation' },
   classification:{ bg: 'rgba(34,197,94,0.1)',   text: '#15803d', label: 'Classification' },
+  embedding:     { bg: 'rgba(217,119,6,0.1)',   text: '#b45309', label: 'Embedding' },
+  backbone:      { bg: 'rgba(100,116,139,0.12)',text: '#475569', label: 'Backbone' },
+  detect_head:   { bg: 'rgba(219,39,119,0.1)',  text: '#be185d', label: 'Detect Head' },
+  segment_head:  { bg: 'rgba(79,70,229,0.1)',   text: '#4338ca', label: 'Segment Head' },
+  yolo_detect:   { bg: 'rgba(234,88,12,0.1)',   text: '#c2410c', label: 'YOLO Detector' },
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -487,6 +492,8 @@ function ModelForm({ initial, onCancel, onSave, saving }: ModelFormProps) {
   const set = (k: keyof ModelFormState) => (v: string) =>
     setForm((prev) => ({ ...prev, [k]: v }));
 
+  const isEmbedding = form.type === 'embedding';
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.name.trim()) { toast.error('Name is required'); return; }
@@ -530,6 +537,7 @@ function ModelForm({ initial, onCancel, onSave, saving }: ModelFormProps) {
             <option value="detection">Detection</option>
             <option value="segmentation">Segmentation</option>
             <option value="classification">Classification</option>
+            <option value="embedding">Embedding</option>
           </select>
         </div>
         <div>
@@ -552,19 +560,22 @@ function ModelForm({ initial, onCancel, onSave, saving }: ModelFormProps) {
           placeholder="https://your-model-api.com/predict" style={inputStyle} />
       </div>
 
-      {/* Annotation schema picker */}
-      <SchemaSection
-        annotation_schema_id={form.annotation_schema_id}
-        on_change={(id) => set('annotation_schema_id')(id)}
-      />
+      {/* Annotation schema + adapter only apply to models that produce annotations */}
+      {!isEmbedding && (
+        <>
+          <SchemaSection
+            annotation_schema_id={form.annotation_schema_id}
+            on_change={(id) => set('annotation_schema_id')(id)}
+          />
 
-      {/* Adapter selection */}
-      <AdapterSection
-        adapter_name={form.adapter_name}
-        adapter_config_json={form.adapter_config_json}
-        on_adapter_change={(name) => set('adapter_name')(name)}
-        on_config_change={(json) => set('adapter_config_json')(json)}
-      />
+          <AdapterSection
+            adapter_name={form.adapter_name}
+            adapter_config_json={form.adapter_config_json}
+            on_adapter_change={(name) => set('adapter_name')(name)}
+            on_config_change={(json) => set('adapter_config_json')(json)}
+          />
+        </>
+      )}
 
       {/* Auth token */}
       <div>
@@ -965,6 +976,11 @@ export function ModelsContent({ workspaceId: _workspaceId }: ModelsContentProps)
             <option value="detection">Detection</option>
             <option value="segmentation">Segmentation</option>
             <option value="classification">Classification</option>
+            <option value="embedding">Embedding</option>
+            <option value="backbone">Backbone</option>
+            <option value="detect_head">Detect Head</option>
+            <option value="segment_head">Segment Head</option>
+            <option value="yolo_detect">YOLO Detector</option>
           </select>
         </div>
       </div>
@@ -1042,7 +1058,10 @@ export function ModelsContent({ workspaceId: _workspaceId }: ModelsContentProps)
                 background: C.accentDim, border: `1px solid ${C.cardBorder}`,
                 display: 'flex', flexWrap: 'wrap', gap: '8px 24px',
               }}>
-                {(['detection', 'segmentation', 'classification'] as const).map((t) => {
+                {([
+                  'detection', 'segmentation', 'classification', 'embedding',
+                  'backbone', 'detect_head', 'segment_head', 'yolo_detect',
+                ] as const).map((t) => {
                   const count = models.filter((m) => m.type === t).length;
                   if (!count) return null;
                   return (

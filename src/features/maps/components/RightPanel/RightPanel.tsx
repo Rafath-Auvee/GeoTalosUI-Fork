@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect } from 'react';
 import { X } from 'lucide-react';
 import { useMapLayersStore } from '@/stores/mapLayersStore';
 import { FeaturePropertiesPanel } from './FeaturePropertiesPanel';
@@ -11,6 +12,8 @@ import { DatasetItemsPanel } from './DatasetItemsPanel';
 import { AnnotationSetPanel } from './AnnotationSetPanel';
 import { AnnotationDrawPanel } from './AnnotationDrawPanel';
 import { AoiPanel } from './AoiPanel';
+import { InteractiveAoiPanel } from '../../interactive/InteractiveAoiPanel';
+import { useInteractiveStore } from '../../interactive/store';
 import { MC, MAP_Z } from '../../mapColors';
 import { useIsCompact } from '@/hooks/use-mobile';
 import type { Dataset } from '@/types/api';
@@ -48,6 +51,15 @@ export function RightPanel({ topOffset, bottomOffset, mapId, projectId }: RightP
   const layers = useMapLayersStore((s) => s.layers);
   const isCompact = useIsCompact();
 
+  // Interactive annotation replaces the AOI panel while active (its own header,
+  // wider). If the panel is closed or switched away from the AOI, leave the
+  // mode — the draft is kept and offered for restore next time.
+  const interactiveActive = useInteractiveStore((s) => s.active);
+  const interactive = interactiveActive && rightPanelMode === 'aoi';
+  useEffect(() => {
+    if (interactiveActive && rightPanelMode !== 'aoi') useInteractiveStore.getState().exit();
+  }, [interactiveActive, rightPanelMode]);
+
   // For measurement mode, close = stop measuring
   const handleClose = rightPanelMode === 'measurement' ? clearMeasurement : closeRightPanel;
 
@@ -61,7 +73,9 @@ export function RightPanel({ topOffset, bottomOffset, mapId, projectId }: RightP
     : 'calc(100% - 16px)';
 
   // ── Shared panel content ──────────────────────────────────────────────────
-  const panelContent = (
+  const panelContent = interactive ? (
+    <InteractiveAoiPanel />
+  ) : (
     <>
       {/* Drag handle — compact only */}
       {isCompact && (
@@ -162,6 +176,7 @@ export function RightPanel({ topOffset, bottomOffset, mapId, projectId }: RightP
 
         {/* Bottom sheet */}
         <div
+          data-panel="right"
           style={{
             position: 'absolute',
             bottom: 0,
@@ -190,11 +205,12 @@ export function RightPanel({ topOffset, bottomOffset, mapId, projectId }: RightP
   // ── Desktop: slide-in from right ──────────────────────────────────────────
   return (
     <div
+      data-panel="right"
       style={{
         position: 'absolute',
         top: panelTop,
         right: 8,
-        width: 320,
+        width: interactive ? 380 : 320,
         maxHeight: maxPanelH,
         zIndex: MAP_Z.panel,
         background: MC.panelBg,
@@ -203,8 +219,8 @@ export function RightPanel({ topOffset, bottomOffset, mapId, projectId }: RightP
         boxShadow: isOpen ? MC.shadowMd : 'none',
         display: 'flex',
         flexDirection: 'column',
-        transform: isOpen ? 'translateX(0)' : 'translateX(336px)',
-        transition: 'transform 0.22s cubic-bezier(0.2,0,0,1)',
+        transform: isOpen ? 'translateX(0)' : 'translateX(396px)',
+        transition: 'transform 0.22s cubic-bezier(0.2,0,0,1), width 0.22s cubic-bezier(0.2,0,0,1)',
         overflow: 'hidden',
       }}
     >
