@@ -5,6 +5,8 @@ import dynamic from 'next/dynamic';
 import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query';
 import { useAuth } from '@clerk/nextjs';
 import { toast } from 'sonner';
+import { HTTPError } from 'ky';
+import Link from 'next/link';
 
 import { useMapStore, getMapInstance } from '@/stores/mapStore';
 import { useMapLayersStore, wasLayerLocallyRemoved, markLayerLocallyRemoved } from '@/stores/mapLayersStore';
@@ -67,11 +69,13 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
   const { orgId } = useAuth();
 
   // ── Server state ───────────────────────────────────────────
-  const { data: mapData } = useQuery({
+  const { data: mapData, error: mapError } = useQuery({
     queryKey: qk.maps.detail(mapId),
     queryFn: () => mapsApi.get(mapId),
     enabled: !!mapId,
   });
+  // 404: no such map in this organization; 422: the id is not a UUID.
+  const mapMissing = mapError instanceof HTTPError && [404, 422].includes(mapError.response.status);
 
   const updateMapMutation = useMutation({
     mutationFn: (name: string) => mapsApi.update(mapId, { name }),
@@ -1568,6 +1572,18 @@ export function MapEditorShell({ workspaceId, projectId, mapId }: MapEditorShell
       }).catch(() => {});
     }
   }, [mapId]);
+
+  if (mapMissing) {
+    return (
+      <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, background: '#1a1e17', color: '#e8e4d8', zIndex: MAP_Z.root, fontFamily: 'system-ui, sans-serif' }}>
+        <h1 style={{ fontSize: 20, margin: 0 }}>Map not found</h1>
+        <p style={{ margin: 0, opacity: 0.7, fontSize: 14 }}>It may have been deleted, or the link is wrong.</p>
+        <Link href={`/workspace/${workspaceId}/projects/${projectId}`} style={{ color: '#e8e4d8', textDecoration: 'underline', fontSize: 14 }}>
+          Back to the project
+        </Link>
+      </div>
+    );
+  }
 
   return (
     // Root — fills the viewport as a flex column: TopNav → Map area → StatusBar
